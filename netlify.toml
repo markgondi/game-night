@@ -1,0 +1,15 @@
+[build]
+  publish = "dist"
+  functions = "netlify/functions"
+  command = "npm run build"
+
+[dev]
+  command = "npm run dev"
+  port = 8888
+  targetPort = 5173
+
+# Friendly URL: /api/bgg → /.netlify/functions/bgg
+[[redirects]]
+  from = "/api/bgg"
+  to = "/.netlify/functions/bgg"
+  status = 200
