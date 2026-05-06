@@ -116,20 +116,37 @@ function Steps({ total, current }) {
 
 function GameImg({ game, height, radius=0 }) {
   const col = cardBg(game);
-  if(game.image) return <div style={{height,borderRadius:radius,backgroundImage:`url(${game.image})`,backgroundSize:'cover',backgroundPosition:'center'}}/>;
-  return (
-    <div style={{
-      height, borderRadius:radius,
-      background:`linear-gradient(135deg, ${col} 0%, ${col}dd 60%, rgba(0,0,0,0.45) 100%)`,
-      display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden',
-      position:'relative',
-    }}>
+  const [failed, setFailed] = useState(false);
+
+  // Show fallback if no image OR if image failed to load
+  if (!game.image || failed) {
+    return (
       <div style={{
-        fontFamily:T.serif, fontSize:Math.floor(height/3.5), fontWeight:700,
-        color:'rgba(255,255,255,0.55)', textAlign:'center', padding:'0 14px',
-        lineHeight:1.05, letterSpacing:'-0.02em',
-        textShadow:'0 1px 2px rgba(0,0,0,0.3)',
-      }}>{game.name}</div>
+        height, borderRadius:radius,
+        background:`linear-gradient(135deg, ${col} 0%, ${col}dd 60%, rgba(0,0,0,0.45) 100%)`,
+        display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden',
+        position:'relative',
+      }}>
+        <div style={{
+          fontFamily:T.serif, fontSize:Math.floor(height/3.5), fontWeight:700,
+          color:'rgba(255,255,255,0.55)', textAlign:'center', padding:'0 14px',
+          lineHeight:1.05, letterSpacing:'-0.02em',
+          textShadow:'0 1px 2px rgba(0,0,0,0.3)',
+        }}>{game.name}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{height, borderRadius:radius, overflow:'hidden', background:col, position:'relative'}}>
+      <img
+        src={game.image}
+        alt={game.name}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setFailed(true)}
+        style={{width:'100%', height:'100%', objectFit:'cover', display:'block'}}
+      />
     </div>
   );
 }
@@ -1106,31 +1123,59 @@ function bggToGame(coll, thing) {
   };
 }
 
+// Hit the proxy, automatically retrying on 202 (BGG still preparing data).
+// Shows progress so the user knows we're waiting on BGG, not stuck.
+async function fetchWithRetry(url, onProgress, maxAttempts = 8, delayMs = 4000) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch {
+      throw new Error('Network error — check your connection.');
+    }
+    if (res.status !== 202) return res;
+    // BGG still preparing — wait and try again
+    onProgress?.(`BGG is preparing your collection… (${attempt}/${maxAttempts})`);
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  throw new Error('BGG took too long to respond. Try again in a minute — large collections take longer to prepare on their side.');
+}
+
 async function syncBggUser(username, onProgress) {
   if (!username || !username.trim()) throw new Error('Enter a BGG username');
   const u = username.trim();
   onProgress?.('Fetching collection…');
 
-  let collRes;
-  try {
-    collRes = await fetch(`/api/bgg?type=collection&user=${encodeURIComponent(u)}`);
-  } catch (netErr) {
-    throw new Error('Network error — is the BGG proxy running? Use `netlify dev` not `npm run dev`.');
-  }
+  const collRes = await fetchWithRetry(
+    `/api/bgg?type=collection&user=${encodeURIComponent(u)}`,
+    onProgress
+  );
 
+  if (collRes.status === 401 || collRes.status === 403) {
+    throw new Error(
+      `Access denied (HTTP ${collRes.status}). If this is a Netlify gate, ` +
+      `check Site configuration → Visitor access. ` +
+      `If BGG, your collection may be set to private — go to BGG → Account → Privacy.`
+    );
+  }
   if (collRes.status === 404) {
-    throw new Error('BGG proxy not found at /api/bgg. Run `netlify dev` (not `npm run dev`) so the function is served.');
+    throw new Error('BGG proxy not found at /api/bgg. Make sure the function deployed (Netlify → Functions tab).');
   }
   if (!collRes.ok) {
-    let msg = `BGG fetch failed (HTTP ${collRes.status})`;
-    try { const j = await collRes.json(); if (j.error) msg = j.error; } catch {}
+    let msg = `Request failed (HTTP ${collRes.status})`;
+    try {
+      const j = await collRes.json();
+      if (j.error) msg = `BGG: ${j.error}`;
+    } catch {
+      msg = `Server returned HTTP ${collRes.status}.`;
+    }
     throw new Error(msg);
   }
 
   const coll = await collRes.json();
   if (coll.error) throw new Error(coll.error);
-  if (!Array.isArray(coll)) throw new Error('Unexpected BGG response — proxy may be misconfigured.');
-  if (coll.length === 0) throw new Error('No owned games found. Check your username, and make sure your collection is public.');
+  if (!Array.isArray(coll)) throw new Error('Unexpected response from BGG proxy.');
+  if (coll.length === 0) throw new Error(`No owned games found for "${u}". Check the username spelling, and make sure your BGG collection is set to public.`);
 
   // Fetch thing details in batches of 20 (URL length safety)
   const ids = coll.map(c => c.id);
@@ -1140,7 +1185,7 @@ async function syncBggUser(username, onProgress) {
     const slice = ids.slice(i, i + batchSize);
     onProgress?.(`Fetching details… ${Math.min(i + batchSize, ids.length)}/${ids.length}`);
     try {
-      const tr = await fetch(`/api/bgg?type=thing&ids=${slice.join(',')}`);
+      const tr = await fetchWithRetry(`/api/bgg?type=thing&ids=${slice.join(',')}`, onProgress);
       if (tr.ok) {
         const td = await tr.json();
         if (td && !td.error) Object.assign(things, td);
