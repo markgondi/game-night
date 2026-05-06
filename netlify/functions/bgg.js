@@ -144,10 +144,12 @@ function urlOf(v) {
 }
 
 // -------- Collection (owned games + my rating) --------
-async function getCollection(user) {
+async function getCollection(user, { refresh = false } = {}) {
   const key = `coll:${user}`;
-  const hit = cacheGet(key);
-  if (hit) return hit;
+  if (!refresh) {
+    const hit = cacheGet(key);
+    if (hit) return hit;
+  }
 
   // own=1 → only owned, stats=1 → include rating + bgg-average, excludesubtype filters expansions
   const url = `https://boardgamegeek.com/xmlapi2/collection?username=${encodeURIComponent(user)}&own=1&stats=1&excludesubtype=boardgameexpansion`;
@@ -156,7 +158,6 @@ async function getCollection(user) {
   const items = arr(data?.items?.item).map((it) => {
     const stats = it.stats || {};
     const rating = stats.rating || {};
-    // Rating value can be "N/A" or a number string
     const rawMyRating = rating?.value;
     const myRating = (rawMyRating == null || rawMyRating === 'N/A') ? null : Number(rawMyRating);
 
@@ -175,7 +176,13 @@ async function getCollection(user) {
     };
   });
 
-  cacheSet(key, items);
+  // Sanity check: the XML response includes a totalitems attribute. If we parsed
+  // fewer items than BGG reported, something's wrong — don't cache the broken result.
+  const totalReported = numOf(data?.items?.totalitems);
+  const looksComplete = !totalReported || items.length >= totalReported;
+  if (looksComplete && items.length > 0) {
+    cacheSet(key, items);
+  }
   return items;
 }
 
@@ -267,12 +274,13 @@ export default async (req) => {
   const type = url.searchParams.get('type') || 'collection';
   const user = url.searchParams.get('user');
   const ids  = url.searchParams.get('ids');
+  const refresh = url.searchParams.get('refresh') === '1';
 
   try {
     let body;
     if (type === 'collection') {
       if (!user) throw new Error('Missing ?user=');
-      body = await getCollection(user);
+      body = await getCollection(user, { refresh });
     } else if (type === 'plays') {
       if (!user) throw new Error('Missing ?user=');
       body = await getPlays(user);
@@ -286,7 +294,8 @@ export default async (req) => {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=600',
+        // Don't let Netlify edge cache user-specific data when refreshing
+        'Cache-Control': refresh ? 'no-store' : 'public, max-age=600',
       },
     });
   } catch (err) {

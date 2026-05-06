@@ -25,6 +25,12 @@
   to = "/.netlify/functions/sessions"
   status = 200
 
+# Backup API — for personal data sync via backup code
+[[redirects]]
+  from = "/api/backup/*"
+  to = "/.netlify/functions/backup/:splat"
+  status = 200
+
 # /vote/:sessionId is a frontend route — let React handle it
 [[redirects]]
   from = "/vote/*"

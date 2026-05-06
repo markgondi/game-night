@@ -1426,7 +1426,7 @@ async function syncBggUser(username, onProgress) {
   onProgress?.('Fetching collection…');
 
   const collRes = await fetchWithRetry(
-    `/api/bgg?type=collection&user=${encodeURIComponent(u)}`,
+    `/api/bgg?type=collection&user=${encodeURIComponent(u)}&refresh=1`,
     onProgress
   );
 
@@ -1478,6 +1478,167 @@ async function syncBggUser(username, onProgress) {
 }
 
 // ── Profile (BGG sync) sheet ──────────────────────────────────────────────────
+// ── Backup Sheet (cloud sync via code) ───────────────────────────────────────
+function BackupSheet({ code, syncedAt, status, onClose, onCreate, onRestore, onDisconnect }) {
+  const [mode, setMode] = useState(code ? 'connected' : 'home'); // 'home' | 'show-new' | 'restore' | 'connected'
+  const [generatedCode, setGeneratedCode] = useState(null);
+  const [restoreInput, setRestoreInput] = useState('');
+  const [restoreError, setRestoreError] = useState(null);
+  const [restoring, setRestoring] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  function handleCreate() {
+    const newCode = generateBackupCode();
+    setGeneratedCode(newCode);
+    setMode('show-new');
+  }
+
+  async function confirmCreate() {
+    await onCreate(generatedCode);
+    setMode('connected');
+  }
+
+  async function handleRestore() {
+    setRestoreError(null);
+    if (!restoreInput.trim()) return;
+    setRestoring(true);
+    try {
+      await onRestore(restoreInput);
+      setMode('connected');
+    } catch (e) {
+      setRestoreError(e.message || 'Restore failed');
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  function copyCode() {
+    const c = generatedCode || code;
+    navigator.clipboard.writeText(prettyBackupCode(c)).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.65)',zIndex:400,display:'flex',alignItems:'flex-end',backdropFilter:'blur(4px)'}} onClick={onClose}>
+      <div className="sheet-in" onClick={e=>e.stopPropagation()} style={{background:T.surface,borderRadius:'20px 20px 0 0',width:'100%',maxWidth:480,margin:'0 auto',maxHeight:'88vh',overflowY:'auto',boxShadow:'0 -12px 48px rgba(0,0,0,0.5)'}}>
+        <div style={{display:'flex',justifyContent:'center',padding:'14px 0 0'}}><div style={{width:36,height:4,borderRadius:2,background:T.border}}/></div>
+        <div style={{padding:'18px 22px 36px'}}>
+
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18}}>
+            <div>
+              <h2 style={{fontFamily:T.serif,fontSize:26,fontWeight:700,color:T.ink,lineHeight:1.05,marginBottom:4}}>Cloud backup</h2>
+              <div style={{fontFamily:T.sans,fontSize:13,color:T.sub}}>Save your library and scores to the cloud</div>
+            </div>
+            <button className="press" onClick={onClose} style={{width:34,height:34,borderRadius:'50%',background:T.faint,border:'none',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer',color:T.sub,flexShrink:0}}>
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="1" y1="1" x2="13" y2="13"/><line x1="13" y1="1" x2="1" y2="13"/></svg>
+            </button>
+          </div>
+
+          {/* HOME — no backup yet */}
+          {mode === 'home' && (
+            <>
+              <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,lineHeight:1.6,marginBottom:22}}>
+                Get a backup code to safely keep your library, scores, and BGG profile in the cloud. Use the code on a new phone to restore everything.
+              </p>
+              <Btn onClick={handleCreate} variant='amber' full>Create new backup code</Btn>
+              <div style={{textAlign:'center',margin:'18px 0',fontFamily:T.sans,fontSize:12,color:T.sub,letterSpacing:'0.08em',textTransform:'uppercase'}}>or</div>
+              <Btn onClick={()=>setMode('restore')} variant='outline' full>I already have a code — restore</Btn>
+              <p style={{fontFamily:T.sans,fontSize:11,color:T.sub,marginTop:24,lineHeight:1.6,opacity:0.8,textAlign:'center'}}>
+                Anyone with your code can read or overwrite your backup. Keep it private.
+              </p>
+            </>
+          )}
+
+          {/* SHOW NEW CODE */}
+          {mode === 'show-new' && generatedCode && (
+            <>
+              <Lbl>Your new backup code</Lbl>
+              <div style={{
+                background:T.card, borderRadius:14, padding:'24px 20px', marginBottom:14,
+                textAlign:'center', boxShadow:T.shadow,
+                border:`1.5px solid ${T.amberBd}`,
+              }}>
+                <div style={{
+                  fontFamily:'monospace', fontSize:22, fontWeight:700, letterSpacing:'0.1em',
+                  color:T.amber, lineHeight:1.4,
+                }}>
+                  {prettyBackupCode(generatedCode)}
+                </div>
+              </div>
+              <div style={{display:'flex',gap:10,marginBottom:18}}>
+                <Btn onClick={copyCode} variant='outline' full>{copied ? 'Copied' : 'Copy code'}</Btn>
+              </div>
+              <div style={{background:T.dangerBg,borderRadius:10,padding:'12px 14px',marginBottom:18,fontFamily:T.sans,fontSize:13,color:T.danger,lineHeight:1.55,border:`1px solid ${T.dangerBd}`}}>
+                <strong style={{display:'block',marginBottom:4}}>Save this code somewhere safe.</strong>
+                There is no way to recover it if you lose it. Anyone with this code has full access to your backup.
+              </div>
+              <Btn onClick={confirmCreate} variant='amber' full>I've saved it — start syncing</Btn>
+            </>
+          )}
+
+          {/* RESTORE */}
+          {mode === 'restore' && (
+            <>
+              <Lbl>Enter your backup code</Lbl>
+              <input
+                value={restoreInput}
+                onChange={e => setRestoreInput(e.target.value)}
+                placeholder="BLUE-WOLF-RIVER-87"
+                autoCapitalize="characters"
+                spellCheck={false}
+                style={{...IS, fontFamily:'monospace', letterSpacing:'0.05em', textTransform:'uppercase'}}
+              />
+              <p style={{fontFamily:T.sans,fontSize:12,color:T.sub,marginTop:8,marginBottom:16,lineHeight:1.55}}>
+                Restoring overwrites whatever's on this device.
+              </p>
+              {restoreError && (
+                <div style={{background:T.dangerBg,borderRadius:10,padding:'11px 14px',marginBottom:14,fontFamily:T.sans,fontSize:13,color:T.danger,lineHeight:1.5}}>
+                  {restoreError}
+                </div>
+              )}
+              <div style={{display:'flex',gap:10}}>
+                <Btn onClick={handleRestore} variant='amber' full disabled={!restoreInput.trim() || restoring}>
+                  {restoring ? 'Restoring…' : 'Restore'}
+                </Btn>
+                <Btn onClick={()=>setMode('home')} variant='ghost'>Back</Btn>
+              </div>
+            </>
+          )}
+
+          {/* CONNECTED */}
+          {mode === 'connected' && code && (
+            <>
+              <div style={{background:T.card,borderRadius:12,padding:'16px 18px',marginBottom:18,boxShadow:T.shadow}}>
+                <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.sub,marginBottom:8}}>Backup code</div>
+                <div style={{fontFamily:'monospace',fontSize:18,fontWeight:700,letterSpacing:'0.08em',color:T.ink,marginBottom:8}}>{prettyBackupCode(code)}</div>
+                <div style={{fontFamily:T.sans,fontSize:12,color:T.sub,display:'flex',alignItems:'center',gap:6}}>
+                  {status === 'syncing' && <><span style={{width:6,height:6,borderRadius:'50%',background:T.amber,animation:'pulse 1.5s ease-in-out infinite'}}/>Syncing…</>}
+                  {status === 'idle' && syncedAt && <><span style={{width:6,height:6,borderRadius:'50%',background:'#5DCE8A'}}/>Synced {timeAgo(syncedAt)}</>}
+                  {status === 'idle' && !syncedAt && <>Waiting for first sync…</>}
+                  {status === 'error' && <span style={{color:T.danger}}>Sync failed — will retry</span>}
+                </div>
+              </div>
+              <div style={{display:'flex',gap:10,marginBottom:14}}>
+                <Btn onClick={copyCode} variant='outline' full>{copied ? 'Copied' : 'Copy code'}</Btn>
+              </div>
+              <p style={{fontFamily:T.sans,fontSize:12,color:T.sub,lineHeight:1.6,marginBottom:18}}>
+                Your library, scores, and profile sync automatically a few seconds after each change. Use this code on another device to restore.
+              </p>
+              <Btn onClick={onDisconnect} variant='dangerOutline' full>Disconnect from cloud</Btn>
+              <p style={{fontFamily:T.sans,fontSize:11,color:T.sub,marginTop:12,lineHeight:1.55,opacity:0.8,textAlign:'center'}}>
+                Disconnecting stops syncing on this device. Your cloud backup stays put — restore with the code anytime.
+              </p>
+            </>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProfileSheet({ profile, onClose, onSync, onDisconnect, syncStatus, syncError }) {
   const [username, setUsername] = useState(profile?.username || '');
   const [foc, setFoc] = useState(false);
@@ -1614,6 +1775,55 @@ const SessionApi = {
       method: 'DELETE',
       headers: { 'x-owner-key': ownerKey },
     });
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    return r.json();
+  },
+};
+
+// ── Backup (cloud sync via memorable code) ───────────────────────────────────
+// Word lists are short, common, easy to type. ~14 bits per word × 3 words + 7 bits
+// from the number gives ~49 bits of effective entropy — plenty for personal data
+// where the threat model is "random scanning by strangers," not targeted attack.
+const BACKUP_WORDS_A = ['BLUE','RED','GOLD','GREEN','GREY','BLACK','WHITE','PINK','TEAL','CORAL','RUST','SAGE','PLUM','MINT','OCEAN','AMBER'];
+const BACKUP_WORDS_B = ['WOLF','BEAR','HAWK','LION','OWL','FOX','DEER','ORCA','LYNX','EAGLE','SHARK','RAVEN','OTTER','MOTH','CRAB','HARE'];
+const BACKUP_WORDS_C = ['RIVER','PEAK','CLIFF','GLADE','REEF','MESA','BAY','RIDGE','VALE','MARSH','DELTA','FORD','SPRING','MEADOW','GROVE','BROOK'];
+
+function generateBackupCode() {
+  const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  const num = String(Math.floor(Math.random() * 90) + 10); // 10-99
+  return `${pick(BACKUP_WORDS_A)}-${pick(BACKUP_WORDS_B)}-${pick(BACKUP_WORDS_C)}-${num}`;
+}
+
+// Strip dashes/spaces and uppercase for transport. Server normalizes the same way.
+function normalizeBackupCode(raw) {
+  return String(raw || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+// Format with dashes for display, e.g. "BLUEWOLFRIVER87" → "BLUE-WOLF-RIVER-87"
+function prettyBackupCode(raw) {
+  const n = normalizeBackupCode(raw);
+  // Try to find the digit suffix and rebuild
+  const m = n.match(/^([A-Z]+)([A-Z]+)([A-Z]+)(\d+)$/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}-${m[4]}`;
+  return n;
+}
+
+const BackupApi = {
+  async save(code, data) {
+    const r = await fetch(`/api/backup/${normalizeBackupCode(code)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        data,
+        device: navigator.userAgent.slice(0, 64),
+      }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    return r.json();
+  },
+  async fetch(code) {
+    const r = await fetch(`/api/backup/${normalizeBackupCode(code)}`);
+    if (r.status === 404) return null; // No backup yet — not an error
     if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
     return r.json();
   },
@@ -1868,6 +2078,12 @@ function OwnerApp() {
   const [syncError, setSyncError]   = useState(null);
   const [justSynced, setJustSynced] = useState(false);
 
+  // Backup (cloud sync)
+  const [backupCode, setBackupCode] = useState(null);  // user's saved code, or null if not set up
+  const [backupSyncedAt, setBackupSyncedAt] = useState(null);  // last successful upload
+  const [backupStatus, setBackupStatus] = useState('idle');    // 'idle' | 'syncing' | 'error'
+  const [showBackup, setShowBackup] = useState(false);
+
   useEffect(()=>{
     (async()=>{
       try {
@@ -1878,6 +2094,8 @@ function OwnerApp() {
       try{ const r=await window.storage.get('gn4-hist'); if(r) setHistory(JSON.parse(r.value)); }catch{}
       try{ const r=await window.storage.get('gn4-profile'); if(r) setProfile(JSON.parse(r.value)); }catch{}
       try{ const r=await window.storage.get('gn4-vote-session'); if(r) setVoteSession(JSON.parse(r.value)); }catch{}
+      try{ const r=await window.storage.get('gn4-backup-code'); if(r) setBackupCode(JSON.parse(r.value)); }catch{}
+      try{ const r=await window.storage.get('gn4-backup-synced'); if(r) setBackupSyncedAt(JSON.parse(r.value)); }catch{}
       setReady(true);
     })();
   },[]);
@@ -1887,6 +2105,60 @@ function OwnerApp() {
   async function saveHistory(h){ setHistory(h); try{ await window.storage.set('gn4-hist',JSON.stringify(h)); }catch{} }
   async function saveProfile(p){ setProfile(p); try{ if(p) await window.storage.set('gn4-profile',JSON.stringify(p)); else await window.storage.delete('gn4-profile'); }catch{} }
   async function saveVoteSession(v){ setVoteSession(v); try{ if(v) await window.storage.set('gn4-vote-session',JSON.stringify(v)); else await window.storage.delete('gn4-vote-session'); }catch{} }
+  async function saveBackupCode(c){ setBackupCode(c); try{ if(c) await window.storage.set('gn4-backup-code',JSON.stringify(c)); else await window.storage.delete('gn4-backup-code'); }catch{} }
+  async function saveBackupSyncedAt(t){ setBackupSyncedAt(t); try{ if(t) await window.storage.set('gn4-backup-synced',JSON.stringify(t)); else await window.storage.delete('gn4-backup-synced'); }catch{} }
+
+  // Auto-sync: any time the persistable data changes, queue a debounced upload.
+  // 2-second debounce means rapid edits don't hammer the network — we wait for
+  // the user to settle before uploading. NOT synced: voteSession (has its own
+  // cloud storage) or active in-progress local sessions (would be confusing on restore).
+  const backupTimerRef = useRef(null);
+  useEffect(() => {
+    if (!ready || !backupCode) return;
+    // Don't sync when the user is mid-game-night — wait until they finish.
+    // This avoids restoring a half-finished veto round on another device.
+    if (session && session.phase !== undefined) return;
+
+    if (backupTimerRef.current) clearTimeout(backupTimerRef.current);
+    backupTimerRef.current = setTimeout(async () => {
+      setBackupStatus('syncing');
+      try {
+        const payload = {
+          games,
+          history,
+          profile,
+          version: 1,
+        };
+        await BackupApi.save(backupCode, payload);
+        await saveBackupSyncedAt(Date.now());
+        setBackupStatus('idle');
+      } catch (e) {
+        console.warn('Backup sync failed:', e);
+        setBackupStatus('error');
+      }
+    }, 2000);
+
+    return () => {
+      if (backupTimerRef.current) clearTimeout(backupTimerRef.current);
+    };
+    // We deliberately watch the things that should trigger sync, not session
+  }, [ready, backupCode, games, history, profile]);
+
+  // Restore from a code — overwrites local data.
+  async function restoreFromCode(rawCode) {
+    const code = normalizeBackupCode(rawCode);
+    const record = await BackupApi.fetch(code);
+    if (!record) {
+      throw new Error('No backup found for that code. Check spelling and try again.');
+    }
+    const data = record.data || {};
+    if (Array.isArray(data.games)) await saveGames(data.games);
+    if (Array.isArray(data.history)) await saveHistory(data.history);
+    if (data.profile && typeof data.profile === 'object') await saveProfile(data.profile);
+    await saveBackupCode(code);
+    await saveBackupSyncedAt(record.updatedAt || Date.now());
+    return record;
+  }
 
   // Bridge: when remote voting is complete, the panel dispatches an event with a pre-built local session
   useEffect(() => {
@@ -1958,6 +2230,24 @@ function OwnerApp() {
                   : `${games.length} game${games.length===1?'':'s'}${profile?.username?` · ${profile.username}`:''}`}
               </div>
             </div>
+            <button
+              className="press"
+              onClick={()=>setShowBackup(true)}
+              title="Cloud backup"
+              style={{
+                flexShrink:0, width:36, height:36, borderRadius:'50%',
+                border:`1.5px solid ${backupCode ? 'rgba(93,206,138,0.45)' : T.borderMed}`,
+                background:backupCode ? 'rgba(93,206,138,0.10)' : 'transparent',
+                color:backupCode ? '#5DCE8A' : T.sub,
+                display:'flex',alignItems:'center',justifyContent:'center',
+                cursor:'pointer',transition:'all 0.18s',
+              }}>
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5.5 14.5a3.5 3.5 0 0 1 0-7 4.5 4.5 0 0 1 8.7-1.4A3.5 3.5 0 0 1 14.5 14.5"/>
+                {backupCode && backupStatus === 'syncing' && <circle cx="10" cy="11" r="1.2" fill="currentColor"/>}
+                {backupCode && backupStatus === 'idle' && <polyline points="7,11 9,13 13,9"/>}
+              </svg>
+            </button>
             <SyncPill
               profile={profile}
               syncing={!!syncStatus && !syncError && !justSynced}
@@ -1998,6 +2288,20 @@ function OwnerApp() {
         onDisconnect={handleDisconnect}
         syncStatus={syncStatus}
         syncError={syncError}
+      />}
+      {showBackup&&<BackupSheet
+        code={backupCode}
+        syncedAt={backupSyncedAt}
+        status={backupStatus}
+        onClose={()=>setShowBackup(false)}
+        onCreate={async (newCode) => { await saveBackupCode(newCode); }}
+        onRestore={restoreFromCode}
+        onDisconnect={async () => {
+          await saveBackupCode(null);
+          await saveBackupSyncedAt(null);
+          setBackupStatus('idle');
+          setShowBackup(false);
+        }}
       />}
     </>
   );
