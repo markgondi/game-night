@@ -132,6 +132,17 @@ function numOf(v) {
   return null;
 }
 
+// BGG often returns protocol-relative URLs like //cf.geekdo-images.com/...
+// Browsers handle these fine for inline <img>, but they fail in CSS
+// background-image when the page is served over https. Force https.
+function urlOf(v) {
+  const s = strOf(v).trim();
+  if (!s) return '';
+  if (s.startsWith('//')) return `https:${s}`;
+  if (s.startsWith('http://')) return `https://${s.slice(7)}`;
+  return s;
+}
+
 // -------- Collection (owned games + my rating) --------
 async function getCollection(user) {
   const key = `coll:${user}`;
@@ -153,8 +164,8 @@ async function getCollection(user) {
       id: String(it.objectid),
       name: strOf(it.name),
       year: numOf(it.yearpublished),
-      image: strOf(it.image) || strOf(it.thumbnail),
-      thumbnail: strOf(it.thumbnail),
+      image: urlOf(it.image) || urlOf(it.thumbnail),
+      thumbnail: urlOf(it.thumbnail),
       minPlayers: numOf(stats.minplayers),
       maxPlayers: numOf(stats.maxplayers),
       playingTime: numOf(stats.playingtime),
@@ -233,17 +244,17 @@ async function getThings(ids) {
 
     out[id] = {
       name: primaryName,
-      description: it.description,
-      image: it.image,
-      thumbnail: it.thumbnail,
-      minPlayers: Number(it.minplayers?.value) || null,
-      maxPlayers: Number(it.maxplayers?.value) || null,
-      playingTime: Number(it.playingtime?.value) || null,
+      description: strOf(it.description),
+      image: urlOf(it.image),
+      thumbnail: urlOf(it.thumbnail),
+      minPlayers: numOf(it.minplayers),
+      maxPlayers: numOf(it.maxplayers),
+      playingTime: numOf(it.playingtime),
       categories,
       mechanics,
-      weight: Number(stats.averageweight?.value) || null, // 1-5 BGG complexity
-      bggRating: Number(stats.average?.value) || null,
-      bggRatingCount: Number(stats.usersrated?.value) || null,
+      weight: numOf(stats.averageweight), // 1-5 BGG complexity
+      bggRating: numOf(stats.average),
+      bggRatingCount: numOf(stats.usersrated),
     };
   }
   cacheSet(key, out);
