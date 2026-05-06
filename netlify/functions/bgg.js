@@ -36,23 +36,65 @@ function cacheSet(key, data) {
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // Fetch BGG XML, retrying on 202 (their "still processing" code).
-async function fetchBgg(url, { maxRetries = 6, baseDelay = 1500 } = {}) {
+// Netlify functions time out at 10s (free) / 26s (Pro), so we do limited
+// in-function retries and let the frontend handle longer waits if needed.
+//
+// Per BGG's policy (boardgamegeek.com/using_the_xml_api), API access requires
+// an approved application's Bearer token, sent in the Authorization header.
+// Token is loaded from env var BGG_TOKEN — set it in Netlify UI, never in code.
+async function fetchBgg(url, { maxRetries = 3, baseDelay = 2500 } = {}) {
+  const headers = { 'User-Agent': 'game-night-app/1.0' };
+  if (process.env.BGG_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.BGG_TOKEN}`;
+  }
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'game-night-app/1.0' },
-    });
+    const res = await fetch(url, { headers });
+
+    // Token missing or rejected — surface clearly
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        `BGG ${res.status}: token missing or rejected. ` +
+        `Set BGG_TOKEN in Netlify → Site configuration → Environment variables. ` +
+        `Get a token at boardgamegeek.com/applications.`
+      );
+    }
+
+    // Explicit "queued" status — wait and retry within budget
     if (res.status === 202) {
-      // "Accepted, processing" — wait and retry
-      await sleep(baseDelay * Math.pow(1.4, attempt));
+      if (attempt >= maxRetries) {
+        const err = new Error('BGG_QUEUED');
+        err.code = 'QUEUED';
+        throw err;
+      }
+      await sleep(baseDelay);
       continue;
     }
+
     if (!res.ok) {
       throw new Error(`BGG ${res.status}: ${res.statusText}`);
     }
+
     const text = await res.text();
-    return parser.parse(text);
+    const parsed = parser.parse(text);
+
+    // 200 OK but body says "still processing" — same situation
+    const msg = parsed?.message?.value || (typeof parsed?.message === 'string' ? parsed.message : null);
+    if (msg && /processed|try again|accepted/i.test(msg)) {
+      if (attempt >= maxRetries) {
+        const err = new Error('BGG_QUEUED');
+        err.code = 'QUEUED';
+        throw err;
+      }
+      await sleep(baseDelay);
+      continue;
+    }
+
+    return parsed;
   }
-  throw new Error('BGG: gave up after retries (202s)');
+  const err = new Error('BGG_QUEUED');
+  err.code = 'QUEUED';
+  throw err;
 }
 
 // Always return an array — BGG XML returns single items as objects.
@@ -201,6 +243,13 @@ export default async (req) => {
       },
     });
   } catch (err) {
+    // BGG is still preparing the collection — tell the client to retry
+    if (err.code === 'QUEUED') {
+      return new Response(JSON.stringify({ queued: true, message: 'BGG is preparing your collection — retrying…' }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

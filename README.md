@@ -19,6 +19,30 @@ There's no manual game library. BGG is the single source of truth — to add or 
 - **Player count filter** — only shows games that fit your group
 - **Dynamic format** adapts to 1, 2, 3, 4+ players
 
+## BGG API token (required)
+
+Per BoardGameGeek's API policy (effective July 2025), all XML API access requires an approved application's Bearer token.
+
+**One-time setup:**
+
+1. Go to [boardgamegeek.com/applications](https://boardgamegeek.com/applications) (logged in)
+2. Click **Create application**, fill in your details (mark it "Non-commercial" if it's just for you and your friends)
+3. Wait for approval — BGG says this can take up to a week
+4. Once approved, click **Tokens** next to your application and create a token
+5. Copy the token (UUID format like `e3f8c3ff-9926-4efc-863c-3b92acda4d32`)
+
+**Add it to Netlify:**
+
+1. Netlify dashboard → your site → **Site configuration** → **Environment variables**
+2. Click **Add a variable**
+3. Key: `BGG_TOKEN`
+4. Value: paste your token
+5. Save and trigger a redeploy (Deploys tab → Trigger deploy)
+
+The token only lives on the server. It's never sent to the browser, never appears in the React code, never gets committed to GitHub.
+
+**For local dev:** create a `.env` file in the project root with `BGG_TOKEN=your-token-here`. The `.gitignore` already excludes `.env` so you won't commit it by accident.
+
 ## Setup
 
 ```bash
