@@ -100,6 +100,38 @@ async function fetchBgg(url, { maxRetries = 3, baseDelay = 2500 } = {}) {
 // Always return an array — BGG XML returns single items as objects.
 const arr = (v) => v == null ? [] : Array.isArray(v) ? v : [v];
 
+// Pull a string value from a BGG XML node that might be:
+//   - a plain string ("Catan")
+//   - an object with .value ({value: "Catan"})
+//   - an array of either ([{value: "Catan", sortindex: 1}])
+function strOf(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) {
+    if (!v.length) return '';
+    return strOf(v[0]);
+  }
+  if (typeof v === 'object') {
+    return v.value != null ? String(v.value) : '';
+  }
+  return String(v);
+}
+
+// Pull a numeric attribute that BGG sometimes wraps as { value: "3" }
+function numOf(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (typeof v === 'object' && v.value != null) {
+    const n = Number(v.value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 // -------- Collection (owned games + my rating) --------
 async function getCollection(user) {
   const key = `coll:${user}`;
@@ -113,18 +145,22 @@ async function getCollection(user) {
   const items = arr(data?.items?.item).map((it) => {
     const stats = it.stats || {};
     const rating = stats.rating || {};
+    // Rating value can be "N/A" or a number string
+    const rawMyRating = rating?.value;
+    const myRating = (rawMyRating == null || rawMyRating === 'N/A') ? null : Number(rawMyRating);
+
     return {
       id: String(it.objectid),
-      name: typeof it.name === 'object' ? it.name.value : it.name,
-      year: it.yearpublished,
-      image: it.image || it.thumbnail || '',
-      thumbnail: it.thumbnail || '',
-      minPlayers: Number(stats.minplayers) || null,
-      maxPlayers: Number(stats.maxplayers) || null,
-      playingTime: Number(stats.playingtime) || null,
-      myRating: rating.value === 'N/A' ? null : Number(rating.value) || null,
-      bggRating: Number(rating?.average?.value) || null,
-      myPlays: Number(it.numplays) || 0,
+      name: strOf(it.name),
+      year: numOf(it.yearpublished),
+      image: strOf(it.image) || strOf(it.thumbnail),
+      thumbnail: strOf(it.thumbnail),
+      minPlayers: numOf(stats.minplayers),
+      maxPlayers: numOf(stats.maxplayers),
+      playingTime: numOf(stats.playingtime),
+      myRating: Number.isFinite(myRating) ? myRating : null,
+      bggRating: numOf(rating?.average),
+      myPlays: numOf(it.numplays) || 0,
     };
   });
 
