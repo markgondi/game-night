@@ -13,3 +13,20 @@
   from = "/api/bgg"
   to = "/.netlify/functions/bgg"
   status = 200
+
+# Sessions API — splat catches all sub-paths (/api/sessions, /api/sessions/abc/vote, etc.)
+[[redirects]]
+  from = "/api/sessions/*"
+  to = "/.netlify/functions/sessions/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/api/sessions"
+  to = "/.netlify/functions/sessions"
+  status = 200
+
+# /vote/:sessionId is a frontend route — let React handle it
+[[redirects]]
+  from = "/vote/*"
+  to = "/index.html"
+  status = 200

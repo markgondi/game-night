@@ -19,7 +19,31 @@ There's no manual game library. BGG is the single source of truth — to add or 
 - **Player count filter** — only shows games that fit your group
 - **Dynamic format** adapts to 1, 2, 3, 4+ players
 
-## BGG API token (required)
+## Remote voting (new)
+
+Send friends a link to nominate games before they arrive on game night.
+
+**How to use:**
+
+1. From the **Tonight** tab, tap "**Remote voting**"
+2. Enter the names of everyone playing
+3. Tap **Create voting session**
+4. Copy the link and send it to your friends (text/Slack/Discord/whatever)
+5. Watch the live status as votes come in — the page polls every 4 seconds
+6. When everyone has voted, tap **Continue to veto** to run the in-person veto + pick + play flow
+
+**What friends see:** They tap their link, pick their name, choose 3 games, submit. They never see anyone else's picks.
+
+**What you see (owner only):** Live status of who's voted, and once all votes are in, the assembled pool with everyone's nominations combined.
+
+**Privacy:**
+- Anyone with the viewer link can vote, but **cannot see results** — that needs the secret owner key, stored only in your browser.
+- One shared link is used for now. For a first version this is fine for trusted friend groups.
+- Sessions auto-delete after 7 days.
+
+**Storage:** Sessions and votes are stored in [Netlify Blobs](https://docs.netlify.com/blobs/overview/). Free up to 100GB. Each player's vote is stored in a separate blob to avoid write conflicts when people vote at the same time.
+
+
 
 Per BoardGameGeek's API policy (effective July 2025), all XML API access requires an approved application's Bearer token.
 

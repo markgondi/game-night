@@ -144,6 +144,7 @@ function GameImg({ game, height, radius=0 }) {
         alt={game.name}
         loading="lazy"
         referrerPolicy="no-referrer"
+        decoding="async"
         onError={() => setFailed(true)}
         style={{width:'100%', height:'100%', objectFit:'cover', display:'block'}}
       />
@@ -487,10 +488,242 @@ function DetailSheet({ game, onClose }) {
   );
 }
 
-// ── Night Flow ────────────────────────────────────────────────────────────────
-function NightTab({ games, session, onUpdate, onFinish, onGoToLibrary }) {
-  // Block all night phases when library is empty — except an active session
-  if (games.length === 0 && !session) {
+// ── Remote Voting Session ────────────────────────────────────────────────────
+// Owner-side UI. Three states:
+//   1. Setup — pick eligible games, list players, generate session
+//   2. Active — live status of incoming votes, copy link, vote yourself
+//   3. Complete — view assembled pool, hand off to the existing veto/pick flow
+
+function NSessionSetup({ games, onCreated, onCancel }) {
+  const [rows, setRows] = useState(['', '', '', '']);
+  const [count, setCount] = useState(4);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState(null);
+
+  const names = rows.slice(0, count).map(n => n.trim()).filter(Boolean);
+  const valid = names.length >= 2 && games.length > 0;
+
+  function updateRow(i, val) {
+    setRows(prev => { const next = [...prev]; next[i] = val; return next; });
+  }
+
+  async function create() {
+    if (!valid) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const players = names.map(n => ({ id: randomPlayerId(), name: n }));
+      const result = await SessionApi.create({
+        games,
+        players,
+        format: { nominators: players.length, vetoes: true, picker: 'last' },
+      });
+      onCreated(result);
+    } catch (e) {
+      setError(e.message || 'Failed to create session');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="page-in">
+      <h1 style={{fontFamily:T.serif,fontSize:30,fontWeight:700,color:T.ink,marginBottom:6}}>Remote voting</h1>
+      <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:24,lineHeight:1.55}}>
+        Send a link to each friend. They pick 3 games each from your collection before game night.
+      </p>
+
+      <div style={{background:T.card,borderRadius:14,padding:20,marginBottom:14,boxShadow:T.shadow}}>
+        <Lbl>Players</Lbl>
+        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          {Array.from({length:count}).map((_,i)=>(
+            <PlayerRow key={i} index={i} value={rows[i]||''} onChange={v=>updateRow(i,v)}/>
+          ))}
+        </div>
+        <div style={{display:'flex',gap:10,marginTop:14}}>
+          {count>1 && <Btn variant='ghost' size='sm' onClick={()=>{ setCount(c=>c-1); setRows(r=>r.slice(0,-1)); }}>Remove</Btn>}
+          <Btn variant='outline' size='sm' onClick={()=>{ setCount(c=>c+1); setRows(r=>[...r,'']); }}>Add player</Btn>
+        </div>
+      </div>
+
+      <div style={{background:T.card,borderRadius:14,padding:'16px 20px',marginBottom:24,boxShadow:T.shadow,fontFamily:T.sans,fontSize:13,color:T.sub,lineHeight:1.6}}>
+        <Lbl>Format</Lbl>
+        Each player nominates 3 games independently. Once everyone's voted, you assemble the pool, run vetoes, and make the final pick at the table.
+      </div>
+
+      {error && (
+        <div style={{background:T.dangerBg,borderRadius:10,padding:'11px 14px',marginBottom:14,fontFamily:T.sans,fontSize:13,color:T.danger,lineHeight:1.5}}>
+          {error}
+        </div>
+      )}
+
+      <div style={{display:'flex',gap:10}}>
+        <Btn onClick={create} full disabled={!valid || creating}>
+          {creating ? 'Creating…' : 'Create voting session'}
+        </Btn>
+        <Btn onClick={onCancel} variant='ghost'>Back</Btn>
+      </div>
+
+      {games.length === 0 && (
+        <p style={{fontFamily:T.sans,fontSize:12,color:T.sub,marginTop:14,textAlign:'center'}}>
+          You need to sync games first — Library → Connect BGG.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function NSessionActive({ session, games, onClear }) {
+  const [results, setResults] = useState(null);
+  const [error, setError] = useState(null);
+  const [copyState, setCopyState] = useState('idle'); // 'idle' | 'copied'
+
+  // Poll results every 4s
+  useEffect(() => {
+    let stopped = false;
+    let timer = null;
+
+    async function poll() {
+      try {
+        const r = await SessionApi.getResults(session.sessionId, session.ownerKey);
+        if (!stopped) setResults(r);
+      } catch (e) {
+        if (!stopped) setError(e.message);
+      }
+      if (!stopped) timer = setTimeout(poll, 4000);
+    }
+    poll();
+
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, [session.sessionId, session.ownerKey]);
+
+  function copyLink() {
+    navigator.clipboard.writeText(session.viewerUrl).then(() => {
+      setCopyState('copied');
+      setTimeout(() => setCopyState('idle'), 1800);
+    });
+  }
+
+  async function endSession() {
+    if (!window.confirm('End this voting session and clear all votes?')) return;
+    try {
+      await SessionApi.destroy(session.sessionId, session.ownerKey);
+    } catch {}
+    onClear();
+  }
+
+  if (!results) {
+    return (
+      <div className="page-in">
+        <div style={{textAlign:'center',padding:'60px 0',fontFamily:T.serif,fontSize:18,color:T.sub}}>Loading session…</div>
+        {error && <p style={{fontFamily:T.sans,fontSize:13,color:T.danger,textAlign:'center'}}>{error}</p>}
+      </div>
+    );
+  }
+
+  const players = results.players;
+  const votedIds = new Set(results.votes.map(v => v.playerId));
+  const allVoted = players.every(p => votedIds.has(p.id));
+
+  return (
+    <div className="page-in">
+      <h1 style={{fontFamily:T.serif,fontSize:30,fontWeight:700,color:T.ink,marginBottom:6}}>Voting session</h1>
+      <p style={{fontFamily:T.sans,fontSize:13,color:T.sub,marginBottom:22,lineHeight:1.55,fontFamily:T.sans}}>
+        Session <code style={{fontFamily:'monospace',color:T.amber,fontSize:13,letterSpacing:'0.05em'}}>{session.sessionId}</code> — {votedIds.size} of {players.length} voted
+      </p>
+
+      {/* Share link */}
+      <div style={{background:T.card,borderRadius:14,padding:'14px 16px',marginBottom:14,boxShadow:T.shadow}}>
+        <Lbl>Share this link with players</Lbl>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <input
+            readOnly value={session.viewerUrl}
+            onClick={e => e.target.select()}
+            style={{...IS,fontSize:12,fontFamily:'monospace',padding:'10px 12px',color:T.sub,border:`1.5px solid ${T.border}`}}
+          />
+          <Btn onClick={copyLink} size='sm' variant='primary'>
+            {copyState === 'copied' ? 'Copied' : 'Copy'}
+          </Btn>
+        </div>
+      </div>
+
+      {/* Player status list */}
+      <div style={{background:T.card,borderRadius:14,overflow:'hidden',marginBottom:18,boxShadow:T.shadow}}>
+        {players.map((p, i) => {
+          const hasVoted = votedIds.has(p.id);
+          return (
+            <div key={p.id}>
+              <div style={{display:'flex',alignItems:'center',gap:12,padding:'14px 18px'}}>
+                <div style={{
+                  width:8,height:8,borderRadius:'50%',
+                  background: hasVoted ? '#5DCE8A' : T.border,
+                  flexShrink:0,
+                }}/>
+                <div style={{flex:1,fontFamily:T.sans,fontSize:15,color:T.ink}}>{p.name}</div>
+                <div style={{fontFamily:T.sans,fontSize:11,color:hasVoted?'#5DCE8A':T.sub,letterSpacing:'0.07em',textTransform:'uppercase',fontWeight:600}}>
+                  {hasVoted ? 'voted' : 'waiting'}
+                </div>
+              </div>
+              {i < players.length-1 && <Hr/>}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Status badges + actions */}
+      <div style={{display:'flex',gap:10,marginBottom:14}}>
+        <Btn
+          variant='outline'
+          full
+          onClick={()=>window.open(session.viewerUrl, '_blank')}
+        >
+          Vote myself
+        </Btn>
+      </div>
+
+      {allVoted && (
+        <div style={{background:T.amberBg,border:`1.5px solid ${T.amberBd}`,borderRadius:12,padding:14,marginBottom:14}}>
+          <div style={{fontFamily:T.sans,fontSize:13,color:T.amber,fontWeight:600,marginBottom:8,letterSpacing:'0.02em'}}>
+            ✓ Everyone has voted
+          </div>
+          <p style={{fontFamily:T.sans,fontSize:13,color:T.ink,lineHeight:1.55,marginBottom:12}}>
+            Continue to the in-person veto round. Each player will get one veto, and the last player picks the final game.
+          </p>
+          <Btn
+            variant='amber'
+            full
+            onClick={()=>{
+              // Build a regular session from the votes for the existing flow
+              const pool = [...new Set(results.votes.flatMap(v => v.picks))];
+              const localSession = {
+                phase: 'pool',
+                players: results.players.map(p => p.name),
+                nominatorCount: results.players.length,
+                currentNominator: results.players.length, // already done
+                nominations: Object.fromEntries(results.votes.map((v,idx) => [idx, v.picks])),
+                pool,
+                vetoes: {},
+                remaining: [],
+                chosenGame: null,
+                scores: {},
+              };
+              window.dispatchEvent(new CustomEvent('start-local-from-remote', { detail: localSession }));
+            }}
+          >
+            Continue to veto →
+          </Btn>
+        </div>
+      )}
+
+      <Btn onClick={endSession} variant='dangerOutline' full>End session and discard votes</Btn>
+    </div>
+  );
+}
+function NightTab({ games, session, onUpdate, onFinish, onGoToLibrary, voteSession, onVoteSessionChange }) {
+  const [view, setView] = useState('home'); // 'home' | 'local' | 'remote-setup'
+
+  // Block all paths if library empty AND nothing in flight
+  if (games.length === 0 && !session && !voteSession) {
     return (
       <div className="page-in" style={{paddingTop:32,textAlign:'center'}}>
         <h1 style={{fontFamily:T.serif,fontSize:28,fontWeight:700,color:T.ink,marginBottom:10}}>No games yet</h1>
@@ -501,13 +734,59 @@ function NightTab({ games, session, onUpdate, onFinish, onGoToLibrary }) {
       </div>
     );
   }
-  if(!session)                   return <NSetup                       onStart={onUpdate}/>;
-  if(session.phase==='nominate') return <NNominate games={games} session={session} onUpdate={onUpdate}/>;
-  if(session.phase==='pool')     return <NPool     games={games} session={session} onUpdate={onUpdate}/>;
-  if(session.phase==='veto')     return <NVeto     games={games} session={session} onUpdate={onUpdate}/>;
-  if(session.phase==='pick')     return <NPick     games={games} session={session} onUpdate={onUpdate}/>;
-  if(session.phase==='playing')  return <NPlaying  games={games} session={session} onUpdate={onUpdate} onFinish={onFinish}/>;
-  return null;
+
+  // Active local session takes the screen
+  if (session) {
+    if(session.phase==='nominate') return <NNominate games={games} session={session} onUpdate={onUpdate}/>;
+    if(session.phase==='pool')     return <NPool     games={games} session={session} onUpdate={onUpdate}/>;
+    if(session.phase==='veto')     return <NVeto     games={games} session={session} onUpdate={onUpdate}/>;
+    if(session.phase==='pick')     return <NPick     games={games} session={session} onUpdate={onUpdate}/>;
+    if(session.phase==='playing')  return <NPlaying  games={games} session={session} onUpdate={onUpdate} onFinish={onFinish}/>;
+  }
+
+  // Active remote voting session next
+  if (voteSession) {
+    return <NSessionActive session={voteSession} games={games} onClear={()=>onVoteSessionChange(null)}/>;
+  }
+
+  // Setup flows
+  if (view === 'local')        return <NSetup onStart={onUpdate}/>;
+  if (view === 'remote-setup') return <NSessionSetup games={games} onCreated={s => { onVoteSessionChange(s); setView('home'); }} onCancel={()=>setView('home')}/>;
+
+  // Home — pick mode
+  return (
+    <div className="page-in">
+      <h1 style={{fontFamily:T.serif,fontSize:32,fontWeight:700,color:T.ink,marginBottom:6}}>Tonight</h1>
+      <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:28,lineHeight:1.5}}>
+        How are you running game night?
+      </p>
+
+      <button className="card-press" onClick={()=>setView('local')} style={{
+        width:'100%',background:T.card,borderRadius:14,padding:'18px 20px',marginBottom:12,
+        border:`1.5px solid ${T.border}`,boxShadow:T.shadow,
+        textAlign:'left',cursor:'pointer',display:'block',
+      }}>
+        <div style={{fontFamily:T.serif,fontSize:18,fontWeight:700,color:T.ink,marginBottom:4}}>In-person</div>
+        <div style={{fontFamily:T.sans,fontSize:13,color:T.sub,lineHeight:1.5}}>
+          Everyone's here. Pass the phone around to nominate, veto, and pick.
+        </div>
+      </button>
+
+      <button className="card-press" onClick={()=>setView('remote-setup')} style={{
+        width:'100%',background:T.card,borderRadius:14,padding:'18px 20px',marginBottom:12,
+        border:`1.5px solid ${T.border}`,boxShadow:T.shadow,
+        textAlign:'left',cursor:'pointer',display:'block',
+      }}>
+        <div style={{fontFamily:T.serif,fontSize:18,fontWeight:700,color:T.ink,marginBottom:4}}>
+          Remote voting
+          <span style={{fontSize:10,padding:'2px 7px',background:T.amberBg,color:T.amber,borderRadius:6,marginLeft:8,letterSpacing:'0.05em',textTransform:'uppercase',verticalAlign:'middle',fontWeight:600}}>New</span>
+        </div>
+        <div style={{fontFamily:T.sans,fontSize:13,color:T.sub,lineHeight:1.5}}>
+          Send a link to friends to nominate before they arrive. You assemble the pool when they're all in.
+        </div>
+      </button>
+    </div>
+  );
 }
 
 function NSetup({ onStart }) {
@@ -1280,13 +1559,304 @@ function ProfileSheet({ profile, onClose, onSync, onDisconnect, syncStatus, sync
   );
 }
 
+// ── Sessions API client ──────────────────────────────────────────────────────
+const SessionApi = {
+  async create({ games, players, format }) {
+    // Strip down games to just what we need (don't ship full BGG payload over the wire)
+    const slim = games.map(g => ({
+      id: g.id,
+      name: g.name,
+      image: g.image || '',
+      minPlayers: g.minPlayers,
+      maxPlayers: g.maxPlayers,
+      complexity: g.complexity,
+      category: g.category,
+    }));
+    const r = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ games: slim, players, format }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    return r.json();
+  },
+  async getMeta(sessionId) {
+    const r = await fetch(`/api/sessions/${sessionId}/meta`);
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    return r.json();
+  },
+  async getResults(sessionId, ownerKey) {
+    const r = await fetch(`/api/sessions/${sessionId}/results`, {
+      headers: { 'x-owner-key': ownerKey },
+    });
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    return r.json();
+  },
+  async vote(sessionId, playerId, picks) {
+    const r = await fetch(`/api/sessions/${sessionId}/vote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerId, picks }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    return r.json();
+  },
+  async complete(sessionId, ownerKey) {
+    const r = await fetch(`/api/sessions/${sessionId}/complete`, {
+      method: 'POST',
+      headers: { 'x-owner-key': ownerKey },
+    });
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    return r.json();
+  },
+  async destroy(sessionId, ownerKey) {
+    const r = await fetch(`/api/sessions/${sessionId}`, {
+      method: 'DELETE',
+      headers: { 'x-owner-key': ownerKey },
+    });
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    return r.json();
+  },
+};
+
+// Detect /vote/:sessionId route. Must run before main App renders.
+function getViewerSessionId() {
+  const m = window.location.pathname.match(/^\/vote\/([a-z0-9]{4,})\/?$/i);
+  return m ? m[1] : null;
+}
+
+// Generate stable random IDs (client-side; sessions function generates IDs server-side too)
+function randomPlayerId() {
+  return 'p' + Math.random().toString(36).slice(2, 9);
+}
+
+// ── Viewer Route ─────────────────────────────────────────────────────────────
+function ViewerApp({ sessionId }) {
+  const [meta, setMeta] = useState(null);
+  const [error, setError] = useState(null);
+  const [chosenPlayerId, setChosenPlayerId] = useState(null);
+  const [picks, setPicks] = useState([]);
+  const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [search, setSearch] = useState('');
+  const [searchFoc, setSearchFoc] = useState(false);
+
+  // Load session metadata on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const m = await SessionApi.getMeta(sessionId);
+        setMeta(m);
+
+        // If we previously chose a player on this device, restore it
+        const remembered = localStorage.getItem(`viewer-player-${sessionId}`);
+        if (remembered && m.players.some(p => p.id === remembered)) {
+          setChosenPlayerId(remembered);
+          // If we've already voted, jump straight to thanks
+          if (m.votedPlayerIds.includes(remembered)) setSubmitted(true);
+        }
+      } catch (e) {
+        setError(e.message);
+      }
+    })();
+  }, [sessionId]);
+
+  function chooseAs(playerId) {
+    setChosenPlayerId(playerId);
+    localStorage.setItem(`viewer-player-${sessionId}`, playerId);
+    if (meta?.votedPlayerIds.includes(playerId)) setSubmitted(true);
+  }
+
+  function togglePick(gameId) {
+    setPicks(prev => {
+      if (prev.includes(gameId)) return prev.filter(x => x !== gameId);
+      if (prev.length >= 3) return prev;
+      return [...prev, gameId];
+    });
+  }
+
+  async function submit() {
+    if (picks.length !== 3 || !chosenPlayerId) return;
+    setSubmitting(true);
+    try {
+      await SessionApi.vote(sessionId, chosenPlayerId, picks);
+      setSubmitted(true);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // ── Render states ─────────────
+  if (error) {
+    return (
+      <ViewerShell>
+        <h2 style={{fontFamily:T.serif,fontSize:24,color:T.danger,marginBottom:8}}>Can't load session</h2>
+        <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,lineHeight:1.6}}>{error}</p>
+      </ViewerShell>
+    );
+  }
+
+  if (!meta) {
+    return (
+      <ViewerShell>
+        <div style={{textAlign:'center',padding:'60px 0',fontFamily:T.serif,fontSize:18,color:T.sub}}>Loading…</div>
+      </ViewerShell>
+    );
+  }
+
+  if (meta.readOnly) {
+    return (
+      <ViewerShell>
+        <h2 style={{fontFamily:T.serif,fontSize:24,color:T.ink,marginBottom:8}}>Voting closed</h2>
+        <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,lineHeight:1.6}}>This session is no longer accepting votes.</p>
+      </ViewerShell>
+    );
+  }
+
+  // Step 1 — choose who you are
+  if (!chosenPlayerId) {
+    return (
+      <ViewerShell title="Game Night Voting">
+        <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:22,lineHeight:1.6}}>
+          Tap your name to start voting.
+        </p>
+        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          {meta.players.map(p => {
+            const voted = meta.votedPlayerIds.includes(p.id);
+            return (
+              <button key={p.id} className="press" onClick={()=>chooseAs(p.id)} style={{
+                padding:'14px 18px',borderRadius:12,
+                border:`1.5px solid ${voted?T.amberBd:T.borderMed}`,
+                background:voted?T.amberBg:T.card,
+                color:T.ink,fontFamily:T.sans,fontSize:16,fontWeight:500,
+                textAlign:'left',cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',
+              }}>
+                <span>{p.name}</span>
+                {voted && <span style={{fontSize:11,color:T.amber,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase'}}>voted</span>}
+              </button>
+            );
+          })}
+        </div>
+      </ViewerShell>
+    );
+  }
+
+  // Step 3 — already submitted
+  if (submitted) {
+    return (
+      <ViewerShell title="All done">
+        <div style={{textAlign:'center',padding:'40px 0'}}>
+          <div style={{fontSize:42,marginBottom:12}}>✓</div>
+          <p style={{fontFamily:T.serif,fontSize:22,color:T.ink,marginBottom:8}}>Thanks!</p>
+          <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,lineHeight:1.6}}>
+            Your picks are in. The host will run the rest of the night when everyone has voted.
+          </p>
+        </div>
+      </ViewerShell>
+    );
+  }
+
+  // Step 2 — pick 3 games
+  const me = meta.players.find(p => p.id === chosenPlayerId);
+  const filtered = meta.games.filter(g => !search || g.name.toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <ViewerShell title={`Hi, ${me?.name || ''}`}>
+      <p style={{fontFamily:T.sans,fontSize:13,color:T.sub,marginBottom:14,lineHeight:1.55}}>
+        Choose 3 games you'd like to play. Other players don't see your picks.
+      </p>
+
+      {/* Pick slots */}
+      <div style={{display:'flex',gap:8,marginBottom:14}}>
+        {Array.from({length:3}).map((_,i)=>{
+          const g = picks[i] ? meta.games.find(x=>x.id===picks[i]) : null;
+          return (
+            <div key={i} onClick={g?()=>togglePick(picks[i]):undefined} style={{
+              flex:1,minHeight:46,borderRadius:10,padding:'10px 8px',
+              border:`1.5px solid ${g?T.amber:T.border}`,
+              background:g?T.amberBg:'transparent',
+              display:'flex',alignItems:'center',justifyContent:'center',
+              cursor:g?'pointer':'default',transition:'all 0.15s',
+            }}>
+              {g
+                ? <div style={{fontFamily:T.sans,fontSize:12,color:T.amber,fontWeight:500,textAlign:'center',lineHeight:1.3}}>{g.name}</div>
+                : <div style={{fontFamily:T.sans,fontSize:12,color:T.border,fontWeight:500}}>Pick {i+1}</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Search */}
+      <div style={{position:'relative',marginBottom:14}}>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search…"
+          onFocus={()=>setSearchFoc(true)} onBlur={()=>setSearchFoc(false)}
+          style={{...IS,border:`1.5px solid ${searchFoc?T.amber:T.border}`,paddingLeft:42}}
+        />
+        <svg style={{position:'absolute',left:14,top:'50%',transform:'translateY(-50%)',opacity:0.4,pointerEvents:'none'}} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={T.ink} strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </div>
+
+      {/* Game grid */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:18}}>
+        {filtered.map(g => {
+          const on = picks.includes(g.id);
+          return (
+            <div key={g.id} className="card-press" onClick={()=>togglePick(g.id)} style={{
+              background:on?T.amberBg:T.card,
+              border:`1.5px solid ${on?T.amber:T.border}`,
+              borderRadius:11,overflow:'hidden',cursor:'pointer',
+              boxShadow:on?'none':T.shadow,transition:'all 0.15s',position:'relative',
+            }}>
+              <GameImg game={g} height={82}/>
+              <div style={{padding:'8px 10px 10px'}}>
+                <div style={{fontFamily:T.serif,fontSize:14,fontWeight:700,color:T.ink,lineHeight:1.2,marginBottom:2}}>{g.name}</div>
+                <div style={{fontFamily:T.sans,fontSize:10,color:T.sub}}>{g.minPlayers}–{g.maxPlayers}p</div>
+              </div>
+              {on && <div style={{position:'absolute',top:8,right:8,width:20,height:20,borderRadius:'50%',background:T.amber,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                <div style={{width:8,height:8,borderRadius:'50%',background:'#FFFFFF'}}/>
+              </div>}
+            </div>
+          );
+        })}
+      </div>
+
+      <Btn onClick={submit} full disabled={picks.length !== 3 || submitting}>
+        {submitting ? 'Submitting…' : picks.length < 3 ? `Choose ${3-picks.length} more` : 'Submit my picks'}
+      </Btn>
+    </ViewerShell>
+  );
+}
+
+function ViewerShell({ children, title }) {
+  return (
+    <>
+      <style>{GLOBAL}</style>
+      <div style={{minHeight:'100vh',background:T.bg,maxWidth:480,margin:'0 auto',padding:'24px 22px 40px'}}>
+        <div style={{fontFamily:T.serif,fontSize:17,fontWeight:600,color:T.ink,marginBottom:4}}>Game Night</div>
+        {title && <h1 style={{fontFamily:T.serif,fontSize:30,fontWeight:700,color:T.ink,marginTop:18,marginBottom:8,lineHeight:1.05}}>{title}</h1>}
+        <div style={{height:1,background:T.border,margin:'16px 0 22px'}}/>
+        {children}
+      </div>
+    </>
+  );
+}
+
 // ── Root ──────────────────────────────────────────────────────────────────────
 const NAV=[{id:'library',label:'Library'},{id:'night',label:'Tonight'},{id:'scores',label:'Scores'}];
 
 export default function App() {
+  // Route: /vote/:id → viewer experience. Anything else → owner app.
+  const viewerSessionId = getViewerSessionId();
+  if (viewerSessionId) return <ViewerApp sessionId={viewerSessionId}/>;
+  return <OwnerApp/>;
+}
+
+function OwnerApp() {
   const [tab,setTab]=useState('library');
   const [games,setGames]=useState([]);
   const [session,setSession]=useState(null);
+  const [voteSession,setVoteSession]=useState(null); // { sessionId, ownerKey, viewerUrl }
   const [history,setHistory]=useState([]);
   const [ready,setReady]=useState(false);
   const [modal,setModal]=useState(null);
@@ -1307,6 +1877,7 @@ export default function App() {
       try{ const r=await window.storage.get('gn4-sess'); if(r) setSession(JSON.parse(r.value)); }catch{}
       try{ const r=await window.storage.get('gn4-hist'); if(r) setHistory(JSON.parse(r.value)); }catch{}
       try{ const r=await window.storage.get('gn4-profile'); if(r) setProfile(JSON.parse(r.value)); }catch{}
+      try{ const r=await window.storage.get('gn4-vote-session'); if(r) setVoteSession(JSON.parse(r.value)); }catch{}
       setReady(true);
     })();
   },[]);
@@ -1315,6 +1886,18 @@ export default function App() {
   async function saveSession(s){ setSession(s); try{ if(s) await window.storage.set('gn4-sess',JSON.stringify(s)); else await window.storage.delete('gn4-sess'); }catch{} }
   async function saveHistory(h){ setHistory(h); try{ await window.storage.set('gn4-hist',JSON.stringify(h)); }catch{} }
   async function saveProfile(p){ setProfile(p); try{ if(p) await window.storage.set('gn4-profile',JSON.stringify(p)); else await window.storage.delete('gn4-profile'); }catch{} }
+  async function saveVoteSession(v){ setVoteSession(v); try{ if(v) await window.storage.set('gn4-vote-session',JSON.stringify(v)); else await window.storage.delete('gn4-vote-session'); }catch{} }
+
+  // Bridge: when remote voting is complete, the panel dispatches an event with a pre-built local session
+  useEffect(() => {
+    function handler(e) {
+      saveSession(e.detail);
+      saveVoteSession(null); // close out the remote session — the local flow takes over
+    }
+    window.addEventListener('start-local-from-remote', handler);
+    return () => window.removeEventListener('start-local-from-remote', handler);
+  }, []);
+
 
   async function handleSync(username) {
     setSyncError(null);
@@ -1358,7 +1941,7 @@ export default function App() {
 
   if(!ready) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:T.bg,fontFamily:T.serif,fontSize:18,color:T.sub}}>Loading…</div>;
 
-  const nightBadge=!!session&&tab!=='night';
+  const nightBadge = (!!session || !!voteSession) && tab!=='night';
 
   return (
     <>
@@ -1387,7 +1970,7 @@ export default function App() {
 
         <div style={{padding:'22px 22px 28px'}}>
           {tab==='library'&&<LibraryTab  games={games} onSelect={setModal} onOpenProfile={()=>setShowProfile(true)} profile={profile}/>}
-          {tab==='night'  &&<NightTab    games={games} session={session} onUpdate={saveSession} onFinish={finishNight} onGoToLibrary={()=>setTab('library')}/>}
+          {tab==='night'  &&<NightTab    games={games} session={session} onUpdate={saveSession} onFinish={finishNight} onGoToLibrary={()=>setTab('library')} voteSession={voteSession} onVoteSessionChange={saveVoteSession}/>}
           {tab==='scores' &&<ScoresTab   session={session} history={history} onDeleteEntry={deleteHistoryEntry} games={games}/>}
         </div>
 
