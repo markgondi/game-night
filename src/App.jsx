@@ -172,6 +172,57 @@ function PlayerRow({ index, value, onChange }) {
   );
 }
 
+// Multi-select chips: which players get a veto.
+// `playerNames` = array of trimmed names (filtered, non-empty)
+// `selectedIndices` = which players are on
+// onChange called with the new array
+function VetoerChips({ playerNames, selectedIndices, onChange }) {
+  function toggle(i) {
+    if (selectedIndices.includes(i)) onChange(selectedIndices.filter(x => x !== i));
+    else onChange([...selectedIndices, i].sort((a,b)=>a-b));
+  }
+  if (playerNames.length === 0) return null;
+  return (
+    <div style={{display:'flex',flexWrap:'wrap',gap:7}}>
+      {playerNames.map((name, i) => {
+        const on = selectedIndices.includes(i);
+        return (
+          <button key={i} className="press" onClick={()=>toggle(i)} style={{
+            padding:'7px 13px', borderRadius:18,
+            border:`1.5px solid ${on?T.danger:T.border}`,
+            background: on?T.dangerBg:'transparent',
+            color: on?T.danger:T.sub,
+            fontFamily:T.sans, fontSize:12, fontWeight:500,
+            cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s',
+          }}>{name}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Single-select: which player makes the final pick
+function PickerSelect({ playerNames, selectedIndex, onChange }) {
+  if (playerNames.length === 0) return null;
+  return (
+    <div style={{display:'flex',flexWrap:'wrap',gap:7}}>
+      {playerNames.map((name, i) => {
+        const on = selectedIndex === i;
+        return (
+          <button key={i} className="press" onClick={()=>onChange(i)} style={{
+            padding:'7px 13px', borderRadius:18,
+            border:`1.5px solid ${on?T.amber:T.border}`,
+            background: on?T.amberBg:'transparent',
+            color: on?T.amber:T.sub,
+            fontFamily:T.sans, fontSize:12, fontWeight:500,
+            cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s',
+          }}>{name}</button>
+        );
+      })}
+    </div>
+  );
+}
+
 // Used in AddTab — number field with its own focus state
 function NumField({ label, value, onChange, min=1, max=20 }) {
   const [focus, setFocus] = useState(false);
@@ -499,9 +550,20 @@ function NSessionSetup({ games, onCreated, onCancel }) {
   const [count, setCount] = useState(4);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
+  const [vetoers, setVetoers] = useState(null); // null | number[]
+  const [picker, setPicker]   = useState(null); // null | number
 
   const names = rows.slice(0, count).map(n => n.trim()).filter(Boolean);
-  const valid = names.length >= 2 && games.length > 0;
+  const total = names.length;
+  const valid = total >= 2 && games.length > 0;
+
+  // Defaults if user hasn't touched them
+  const effectiveVetoers = vetoers === null
+    ? names.map((_,i)=>i)
+    : vetoers.filter(i => i < total);
+  const effectivePicker = picker === null
+    ? Math.max(0, total - 1)
+    : (picker < total ? picker : Math.max(0, total - 1));
 
   function updateRow(i, val) {
     setRows(prev => { const next = [...prev]; next[i] = val; return next; });
@@ -516,9 +578,18 @@ function NSessionSetup({ games, onCreated, onCancel }) {
       const result = await SessionApi.create({
         games,
         players,
-        format: { nominators: players.length, vetoes: true, picker: 'last' },
+        format: {
+          nominators: players.length,
+          vetoes: effectiveVetoers.length > 0,
+          // Persist on the session so we can apply when starting the local night
+          vetoerIndices: effectiveVetoers,
+          pickerIndex: effectivePicker,
+          picker: 'index', // semantic marker for future flexibility
+        },
       });
-      onCreated(result);
+      // Also stash the choices locally for when we build the local session later
+      // (server returns sessionId/ownerKey/viewerUrl — we layer our choices on top)
+      onCreated({ ...result, vetoerIndices: effectiveVetoers, pickerIndex: effectivePicker, players });
     } catch (e) {
       setError(e.message || 'Failed to create session');
     } finally {
@@ -546,10 +617,41 @@ function NSessionSetup({ games, onCreated, onCancel }) {
         </div>
       </div>
 
-      <div style={{background:T.card,borderRadius:14,padding:'16px 20px',marginBottom:24,boxShadow:T.shadow,fontFamily:T.sans,fontSize:13,color:T.sub,lineHeight:1.6}}>
-        <Lbl>Format</Lbl>
-        Each player nominates 3 games independently. Once everyone's voted, you assemble the pool, run vetoes, and make the final pick at the table.
-      </div>
+      {total >= 2 && (
+        <div style={{background:T.card,borderRadius:14,padding:20,marginBottom:14,boxShadow:T.shadow}}>
+          <Lbl>Format</Lbl>
+          <p style={{fontFamily:T.sans,fontSize:12,color:T.sub,marginBottom:14,lineHeight:1.55}}>
+            Each player nominates 3 games. Once voting closes, you run vetoes and the final pick in person.
+          </p>
+
+          <div style={{marginBottom:14}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:7}}>
+              <span style={{fontFamily:T.sans,fontSize:13,color:T.sub}}>Vetoers</span>
+              <span style={{fontFamily:T.sans,fontSize:11,color:T.sub,opacity:0.7}}>tap to toggle</span>
+            </div>
+            <VetoerChips
+              playerNames={names}
+              selectedIndices={effectiveVetoers}
+              onChange={setVetoers}
+            />
+          </div>
+
+          <div>
+            <div style={{fontFamily:T.sans,fontSize:13,color:T.sub,marginBottom:7}}>Final picker</div>
+            <PickerSelect
+              playerNames={names}
+              selectedIndex={effectivePicker}
+              onChange={setPicker}
+            />
+          </div>
+        </div>
+      )}
+
+      {total < 2 && (
+        <div style={{background:T.card,borderRadius:14,padding:'16px 20px',marginBottom:14,boxShadow:T.shadow,fontFamily:T.sans,fontSize:13,color:T.sub,lineHeight:1.6}}>
+          Add at least 2 player names to choose vetoers and the final picker.
+        </div>
+      )}
 
       {error && (
         <div style={{background:T.dangerBg,borderRadius:10,padding:'11px 14px',marginBottom:14,fontFamily:T.sans,fontSize:13,color:T.danger,lineHeight:1.5}}>
@@ -573,7 +675,7 @@ function NSessionSetup({ games, onCreated, onCancel }) {
   );
 }
 
-function NSessionActive({ session, games, onClear }) {
+function NSessionActive({ session, games, onClear, onBack }) {
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
   const [copyState, setCopyState] = useState('idle'); // 'idle' | 'copied'
@@ -615,6 +717,19 @@ function NSessionActive({ session, games, onClear }) {
   if (!results) {
     return (
       <div className="page-in">
+        {onBack && (
+          <button className="press" onClick={onBack} style={{
+            display:'flex',alignItems:'center',gap:6,
+            background:'none',border:'none',padding:'4px 0 14px',
+            color:T.sub,fontFamily:T.sans,fontSize:13,fontWeight:500,
+            cursor:'pointer',
+          }}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9,2 3,7 9,12"/>
+            </svg>
+            All sessions
+          </button>
+        )}
         <div style={{textAlign:'center',padding:'60px 0',fontFamily:T.serif,fontSize:18,color:T.sub}}>Loading session…</div>
         {error && <p style={{fontFamily:T.sans,fontSize:13,color:T.danger,textAlign:'center'}}>{error}</p>}
       </div>
@@ -627,8 +742,21 @@ function NSessionActive({ session, games, onClear }) {
 
   return (
     <div className="page-in">
+      {onBack && (
+        <button className="press" onClick={onBack} style={{
+          display:'flex',alignItems:'center',gap:6,
+          background:'none',border:'none',padding:'4px 0 14px',
+          color:T.sub,fontFamily:T.sans,fontSize:13,fontWeight:500,
+          cursor:'pointer',
+        }}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9,2 3,7 9,12"/>
+          </svg>
+          All sessions
+        </button>
+      )}
       <h1 style={{fontFamily:T.serif,fontSize:30,fontWeight:700,color:T.ink,marginBottom:6}}>Voting session</h1>
-      <p style={{fontFamily:T.sans,fontSize:13,color:T.sub,marginBottom:22,lineHeight:1.55,fontFamily:T.sans}}>
+      <p style={{fontFamily:T.sans,fontSize:13,color:T.sub,marginBottom:22,lineHeight:1.55}}>
         Session <code style={{fontFamily:'monospace',color:T.amber,fontSize:13,letterSpacing:'0.05em'}}>{session.sessionId}</code> — {votedIds.size} of {players.length} voted
       </p>
 
@@ -687,14 +815,25 @@ function NSessionActive({ session, games, onClear }) {
             ✓ Everyone has voted
           </div>
           <p style={{fontFamily:T.sans,fontSize:13,color:T.ink,lineHeight:1.55,marginBottom:12}}>
-            Continue to the in-person veto round. Each player will get one veto, and the last player picks the final game.
+            Continue to the in-person veto round. The vetoers and final picker you chose at setup will apply.
           </p>
           <Btn
             variant='amber'
             full
             onClick={()=>{
-              // Build a regular session from the votes for the existing flow
+              // Build a regular session from the votes for the existing flow.
+              // Prefer the choices that the owner picked at session-create time,
+              // falling back to the server's `meta.format` if those didn't make
+              // it into the saved object for some reason.
               const pool = [...new Set(results.votes.flatMap(v => v.picks))];
+              const fmt = results.format || {};
+              const playerCount = results.players.length;
+              const vetoerIndices = session.vetoerIndices
+                ?? fmt.vetoerIndices
+                ?? results.players.map((_,i)=>i);
+              const pickerIndex = session.pickerIndex
+                ?? fmt.pickerIndex
+                ?? (playerCount - 1);
               const localSession = {
                 phase: 'pool',
                 players: results.players.map(p => p.name),
@@ -702,12 +841,16 @@ function NSessionActive({ session, games, onClear }) {
                 currentNominator: results.players.length, // already done
                 nominations: Object.fromEntries(results.votes.map((v,idx) => [idx, v.picks])),
                 pool,
+                vetoerIndices,
+                pickerIndex,
                 vetoes: {},
                 remaining: [],
                 chosenGame: null,
                 scores: {},
               };
-              window.dispatchEvent(new CustomEvent('start-local-from-remote', { detail: localSession }));
+              window.dispatchEvent(new CustomEvent('start-local-from-remote', {
+                detail: { localSession, sourceSessionId: session.sessionId }
+              }));
             }}
           >
             Continue to veto →
@@ -719,11 +862,17 @@ function NSessionActive({ session, games, onClear }) {
     </div>
   );
 }
-function NightTab({ games, session, onUpdate, onFinish, onGoToLibrary, voteSession, onVoteSessionChange }) {
+function NightTab({
+  games, session, onUpdate, onFinish, onGoToLibrary,
+  voteSessions, activeVoteSessionId, onSelectVoteSession,
+  onAddVoteSession, onRemoveVoteSession,
+}) {
   const [view, setView] = useState('home'); // 'home' | 'local' | 'remote-setup'
+  const hasRemoteSessions = voteSessions.length > 0;
+  const activeRemote = voteSessions.find(s => s.sessionId === activeVoteSessionId);
 
   // Block all paths if library empty AND nothing in flight
-  if (games.length === 0 && !session && !voteSession) {
+  if (games.length === 0 && !session && !hasRemoteSessions) {
     return (
       <div className="page-in" style={{paddingTop:32,textAlign:'center'}}>
         <h1 style={{fontFamily:T.serif,fontSize:28,fontWeight:700,color:T.ink,marginBottom:10}}>No games yet</h1>
@@ -735,7 +884,7 @@ function NightTab({ games, session, onUpdate, onFinish, onGoToLibrary, voteSessi
     );
   }
 
-  // Active local session takes the screen
+  // Active local session takes the screen (in-person game night in progress)
   if (session) {
     if(session.phase==='nominate') return <NNominate games={games} session={session} onUpdate={onUpdate}/>;
     if(session.phase==='pool')     return <NPool     games={games} session={session} onUpdate={onUpdate}/>;
@@ -744,16 +893,41 @@ function NightTab({ games, session, onUpdate, onFinish, onGoToLibrary, voteSessi
     if(session.phase==='playing')  return <NPlaying  games={games} session={session} onUpdate={onUpdate} onFinish={onFinish}/>;
   }
 
-  // Active remote voting session next
-  if (voteSession) {
-    return <NSessionActive session={voteSession} games={games} onClear={()=>onVoteSessionChange(null)}/>;
+  // Remote session being viewed in detail
+  if (activeRemote) {
+    return (
+      <NSessionActive
+        session={activeRemote}
+        games={games}
+        onBack={() => onSelectVoteSession(null)}
+        onClear={() => { onRemoveVoteSession(activeRemote.sessionId); }}
+      />
+    );
   }
 
   // Setup flows
-  if (view === 'local')        return <NSetup onStart={onUpdate}/>;
-  if (view === 'remote-setup') return <NSessionSetup games={games} onCreated={s => { onVoteSessionChange(s); setView('home'); }} onCancel={()=>setView('home')}/>;
+  if (view === 'local') return <NSetup onStart={onUpdate}/>;
+  if (view === 'remote-setup') return (
+    <NSessionSetup
+      games={games}
+      onCreated={s => { onAddVoteSession(s); setView('home'); }}
+      onCancel={() => setView('home')}
+    />
+  );
 
-  // Home — pick mode
+  // Home view — varies depending on whether there are any remote sessions yet
+  if (hasRemoteSessions) {
+    return (
+      <NSessionList
+        sessions={voteSessions}
+        onOpen={onSelectVoteSession}
+        onNewRemote={() => setView('remote-setup')}
+        onNewLocal={() => setView('local')}
+      />
+    );
+  }
+
+  // No remote sessions yet — original two-choice screen
   return (
     <div className="page-in">
       <h1 style={{fontFamily:T.serif,fontSize:32,fontWeight:700,color:T.ink,marginBottom:6}}>Tonight</h1>
@@ -789,10 +963,97 @@ function NightTab({ games, session, onUpdate, onFinish, onGoToLibrary, voteSessi
   );
 }
 
+// ── Voting Session List — shown when there's 1+ active remote sessions ───────
+function NSessionList({ sessions, onOpen, onNewRemote, onNewLocal }) {
+  return (
+    <div className="page-in">
+      <h1 style={{fontFamily:T.serif,fontSize:32,fontWeight:700,color:T.ink,marginBottom:6}}>Tonight</h1>
+      <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:24,lineHeight:1.5}}>
+        Your active voting sessions
+      </p>
+
+      <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:24}}>
+        {sessions.map(s => (
+          <NSessionListRow key={s.sessionId} session={s} onClick={() => onOpen(s.sessionId)}/>
+        ))}
+      </div>
+
+      <Btn onClick={onNewRemote} variant='amber' full>+ New voting session</Btn>
+      <div style={{textAlign:'center',margin:'18px 0 0',fontFamily:T.sans,fontSize:12,color:T.sub,letterSpacing:'0.08em',textTransform:'uppercase'}}>or</div>
+      <button className="press" onClick={onNewLocal} style={{
+        width:'100%',marginTop:18,padding:'14px 18px',borderRadius:11,
+        border:`1.5px solid ${T.border}`,background:'transparent',
+        color:T.ink,fontFamily:T.sans,fontSize:14,fontWeight:500,cursor:'pointer',
+        transition:'all 0.15s',
+      }}>
+        Run an in-person night now →
+      </button>
+    </div>
+  );
+}
+
+// Single row in the session list — polls for vote progress so the count is live
+function NSessionListRow({ session, onClick }) {
+  const [meta, setMeta] = useState(null);
+  const [missing, setMissing] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer;
+    async function tick() {
+      try {
+        const m = await SessionApi.getMeta(session.sessionId);
+        if (!cancelled) setMeta(m);
+      } catch (e) {
+        // 404 or gone — flag for the user
+        if (!cancelled) setMissing(true);
+      }
+    }
+    tick();
+    timer = setInterval(tick, 8000); // gentler poll on the list view
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [session.sessionId]);
+
+  const totalPlayers = meta?.players?.length ?? session.players?.length ?? 0;
+  const votedCount = meta?.votedPlayerIds?.length ?? 0;
+  const complete = totalPlayers > 0 && votedCount >= totalPlayers;
+  const age = timeAgo(session.createdAt);
+
+  return (
+    <button className="card-press" onClick={onClick} disabled={missing} style={{
+      width:'100%', textAlign:'left', cursor: missing ? 'default' : 'pointer',
+      background:T.card, borderRadius:13, padding:'14px 16px',
+      border:`1.5px solid ${complete ? T.amberBd : T.border}`,
+      boxShadow:T.shadow, display:'block',
+      opacity: missing ? 0.55 : 1,
+    }}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6,gap:10}}>
+        <div style={{fontFamily:'monospace',fontSize:14,fontWeight:700,color:T.ink,letterSpacing:'0.08em'}}>
+          {session.sessionId.toUpperCase()}
+        </div>
+        {missing
+          ? <div style={{fontFamily:T.sans,fontSize:11,color:T.danger,fontWeight:500}}>Expired</div>
+          : complete
+            ? <div style={{fontFamily:T.sans,fontSize:11,color:T.amber,fontWeight:600,letterSpacing:'0.05em',textTransform:'uppercase'}}>All voted</div>
+            : <div style={{fontFamily:T.sans,fontSize:11,color:T.sub}}>{votedCount}/{totalPlayers} voted</div>
+        }
+      </div>
+      <div style={{fontFamily:T.sans,fontSize:12,color:T.sub,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <span>{totalPlayers > 0 ? `${totalPlayers} player${totalPlayers===1?'':'s'}` : '…'}</span>
+        <span>Created {age}</span>
+      </div>
+    </button>
+  );
+}
+
 function NSetup({ onStart }) {
   const [rows, setRows]   = useState(['','','']);
   const [count, setCount] = useState(3);
   const [nc, setNc]       = useState(2);
+  // Vetoers and picker — track explicitly. `null` means "use defaults"
+  // until the user has touched them, so they auto-follow the player list.
+  const [vetoers, setVetoers] = useState(null);   // null | number[] (indices into `names`)
+  const [picker, setPicker]   = useState(null);   // null | number
 
   // Filled player names only (trimmed, non-empty)
   const names = rows.slice(0,count).map(n=>n.trim()).filter(Boolean);
@@ -807,6 +1068,15 @@ function NSetup({ onStart }) {
     if(maxNc === 0) return;
     setNc(prev => Math.min(Math.max(prev, 1), maxNc));
   }, [maxNc]);
+
+  // Resolved vetoers + picker — use defaults if user hasn't touched them yet.
+  // Default vetoers = everyone. Default picker = last player.
+  const effectiveVetoers = vetoers === null
+    ? names.map((_,i) => i)
+    : vetoers.filter(i => i < total);
+  const effectivePicker = picker === null
+    ? Math.max(0, total - 1)
+    : (picker < total ? picker : Math.max(0, total - 1));
 
   function addPlayer() {
     setCount(c => c + 1);
@@ -829,23 +1099,32 @@ function NSetup({ onStart }) {
       phase:'nominate', players:names,
       nominatorCount: Math.min(nc, total),
       currentNominator:0, nominations:{}, pool:[],
+      vetoerIndices: effectiveVetoers,
+      pickerIndex: effectivePicker,
       vetoes:{}, remaining:[], chosenGame:null, scores:{},
     });
   }
 
-  // Dynamic format-step text, adapting to 1/2/3+ players + nominator choice
+  // Dynamic format-step text, adapting to choices
   const ncSafe = Math.max(1, Math.min(nc, total));
   let steps = null;
   if (total === 1) {
     steps = ['You nominate 3 games', 'You veto one', 'You pick what to play'];
   } else if (total >= 2) {
     const s1 = ncSafe === 1
-      ? 'Player 1 nominates 3 games'
+      ? `${names[0] || 'Player 1'} nominates 3 games`
       : ncSafe === total
         ? `All ${total} players each nominate 3 games`
         : `Players 1–${ncSafe} each nominate 3 games`;
-    const s2 = total === 2 ? 'Both players get a veto' : `All ${total} players get a veto`;
-    const s3 = `Player ${total} makes the final pick`;
+    const vetoCount = effectiveVetoers.length;
+    const s2 = vetoCount === 0
+      ? 'No vetoes — straight to the final pick'
+      : vetoCount === total
+        ? `All ${total} players get a veto`
+        : vetoCount === 1
+          ? `${names[effectiveVetoers[0]] || 'Player'} gets a veto`
+          : `${vetoCount} players get a veto`;
+    const s3 = `${names[effectivePicker] || `Player ${effectivePicker + 1}`} makes the final pick`;
     steps = [s1, s2, s3];
   }
 
@@ -895,7 +1174,7 @@ function NSetup({ onStart }) {
         {total > 0 && total > 1 && (
           <>
             <Hr style={{margin:'16px 0'}}/>
-            <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+            <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',marginBottom:14}}>
               <span style={{fontFamily:T.sans,fontSize:13,color:T.sub,flexShrink:0}}>Nominators</span>
               <div style={{display:'flex',gap:7,flexWrap:'wrap'}}>
                 {Array.from({length: maxNc}, (_,i) => i + 1).map(n=>(
@@ -908,6 +1187,29 @@ function NSetup({ onStart }) {
                   }}>{n}</button>
                 ))}
               </div>
+            </div>
+
+            <div style={{marginBottom:14}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:7}}>
+                <span style={{fontFamily:T.sans,fontSize:13,color:T.sub}}>Vetoers</span>
+                <span style={{fontFamily:T.sans,fontSize:11,color:T.sub,opacity:0.7}}>tap to toggle</span>
+              </div>
+              <VetoerChips
+                playerNames={names}
+                selectedIndices={effectiveVetoers}
+                onChange={setVetoers}
+              />
+            </div>
+
+            <div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:7}}>
+                <span style={{fontFamily:T.sans,fontSize:13,color:T.sub}}>Final picker</span>
+              </div>
+              <PickerSelect
+                playerNames={names}
+                selectedIndex={effectivePicker}
+                onChange={setPicker}
+              />
             </div>
           </>
         )}
@@ -1023,7 +1325,15 @@ function NPool({ games, session, onUpdate }) {
           </div>
         ))}
       </div>
-      <Btn onClick={()=>onUpdate({...session,phase:'veto',currentVetoPlayer:0,vetoes:{}})} full>Begin veto round</Btn>
+      <Btn onClick={()=>{
+        const vetoerIndices = session.vetoerIndices ?? session.players.map((_,i)=>i);
+        // If no one is set to veto, skip the veto round entirely
+        if (vetoerIndices.length === 0) {
+          onUpdate({...session, vetoes:{}, remaining: session.pool, phase:'pick', vetoerIndices});
+        } else {
+          onUpdate({...session, phase:'veto', currentVetoIndex:0, vetoes:{}, vetoerIndices});
+        }
+      }} full>Begin veto round</Btn>
       <div style={{textAlign:'center',marginTop:16}}>
         <button className="press" onClick={()=>onUpdate(null)} style={{background:'none',border:'none',fontFamily:T.sans,fontSize:13,color:T.sub,cursor:'pointer'}}>Cancel night</button>
       </div>
@@ -1032,26 +1342,37 @@ function NPool({ games, session, onUpdate }) {
 }
 
 function NVeto({ games, session, onUpdate }) {
-  const {players,pool,currentVetoPlayer,vetoes}=session;
+  const {players,pool,vetoes} = session;
+  // Backwards-compat: older sessions used currentVetoPlayer + everyone-vetoes assumption.
+  // New sessions use currentVetoIndex into a vetoerIndices array.
+  const vetoerIndices = session.vetoerIndices ?? players.map((_,i)=>i);
+  const currentVetoIndex = session.currentVetoIndex ?? session.currentVetoPlayer ?? 0;
+  const currentPlayerIndex = vetoerIndices[currentVetoIndex];
+  const currentPlayerName = players[currentPlayerIndex];
+
   const [sel,setSel]=useState(null);
   const vetoed=Object.values(vetoes);
   const available=pool.filter(id=>!vetoed.includes(id));
   const poolGames=available.map(id=>games.find(g=>g.id===id)).filter(Boolean);
 
   function proceed(v){
-    const allV={...vetoes,...(v?{[currentVetoPlayer]:v}:{})};
+    // Store veto keyed by the actual player index so we don't collide across roles
+    const allV={...vetoes,...(v?{[currentPlayerIndex]:v}:{})};
     const remaining=pool.filter(id=>!Object.values(allV).includes(id));
-    const isLast=currentVetoPlayer>=players.length-1;
-    if(isLast) onUpdate({...session,vetoes:allV,remaining:remaining.length?remaining:pool,phase:'pick'});
-    else { onUpdate({...session,vetoes:allV,currentVetoPlayer:currentVetoPlayer+1}); setSel(null); }
+    const isLast = currentVetoIndex >= vetoerIndices.length - 1;
+    if(isLast) onUpdate({...session,vetoes:allV,remaining:remaining.length?remaining:pool,phase:'pick',vetoerIndices});
+    else {
+      onUpdate({...session,vetoes:allV,currentVetoIndex:currentVetoIndex+1,vetoerIndices});
+      setSel(null);
+    }
   }
 
   return (
     <div className="page-in">
       <div style={{marginBottom:22}}>
         <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.danger,marginBottom:5}}>Veto round</div>
-        <h2 style={{fontFamily:T.serif,fontSize:28,fontWeight:700,color:T.ink,marginBottom:16}}>{players[currentVetoPlayer]}</h2>
-        <Steps total={players.length} current={currentVetoPlayer}/>
+        <h2 style={{fontFamily:T.serif,fontSize:28,fontWeight:700,color:T.ink,marginBottom:16}}>{currentPlayerName}</h2>
+        <Steps total={vetoerIndices.length} current={currentVetoIndex}/>
       </div>
       <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:18,lineHeight:1.5}}>Select a game to remove, or skip your veto.</p>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:20}}>
@@ -1083,8 +1404,10 @@ function NVeto({ games, session, onUpdate }) {
 }
 
 function NPick({ games, session, onUpdate }) {
-  const {players,nominatorCount,remaining}=session;
-  const picker=players[players.length-1];
+  const {players,remaining}=session;
+  // New sessions store pickerIndex; legacy ones fall back to "last player"
+  const pickerIndex = session.pickerIndex ?? players.length - 1;
+  const picker = players[pickerIndex];
   const [sel,setSel]=useState(null);
   const remainGames=remaining.map(id=>games.find(g=>g.id===id)).filter(Boolean);
 
@@ -2007,8 +2330,8 @@ function ViewerApp({ sessionId }) {
         <svg style={{position:'absolute',left:14,top:'50%',transform:'translateY(-50%)',opacity:0.4,pointerEvents:'none'}} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={T.ink} strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       </div>
 
-      {/* Game grid */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:18}}>
+      {/* Game grid — bottom padding leaves room for the sticky submit bar */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:18,paddingBottom:80}}>
         {filtered.map(g => {
           const on = picks.includes(g.id);
           return (
@@ -2031,9 +2354,60 @@ function ViewerApp({ sessionId }) {
         })}
       </div>
 
-      <Btn onClick={submit} full disabled={picks.length !== 3 || submitting}>
-        {submitting ? 'Submitting…' : picks.length < 3 ? `Choose ${3-picks.length} more` : 'Submit my picks'}
-      </Btn>
+      {/* Sticky submit bar — pinned to bottom of viewport, always visible.
+          Discreet: blurred translucent background, subtle border, only loud
+          (amber) once all 3 picks are made. */}
+      <div style={{
+        position:'fixed',
+        bottom:0, left:'50%', transform:'translateX(-50%)',
+        width:'100%', maxWidth:480,
+        padding:'12px 22px max(14px, env(safe-area-inset-bottom))',
+        background:`linear-gradient(to top, ${T.bg} 70%, rgba(21,17,13,0.85) 100%)`,
+        borderTop:`1px solid ${T.border}`,
+        backdropFilter:'blur(8px)',
+        WebkitBackdropFilter:'blur(8px)',
+        zIndex:200,
+      }}>
+        <button
+          onClick={submit}
+          disabled={picks.length !== 3 || submitting}
+          className="press"
+          style={{
+            width:'100%', display:'flex', alignItems:'center', justifyContent:'space-between',
+            gap:12, padding:'13px 18px', borderRadius:12,
+            border:'none', cursor: (picks.length === 3 && !submitting) ? 'pointer' : 'default',
+            background: picks.length === 3 ? T.amber : T.card,
+            color: picks.length === 3 ? '#15110D' : T.sub,
+            fontFamily:T.sans, fontSize:14, fontWeight:600,
+            transition:'all 0.18s',
+            opacity: submitting ? 0.6 : 1,
+          }}>
+          {/* Left: pick counter dots */}
+          <div style={{display:'flex',alignItems:'center',gap:6}}>
+            {[0,1,2].map(i => (
+              <div key={i} style={{
+                width:7, height:7, borderRadius:'50%',
+                background: picks.length > i
+                  ? (picks.length === 3 ? '#15110D' : T.amber)
+                  : (picks.length === 3 ? 'rgba(21,17,13,0.25)' : T.borderMed),
+                transition:'background 0.18s',
+              }}/>
+            ))}
+            <span style={{fontSize:13, marginLeft:6, opacity:0.85}}>
+              {picks.length}/3
+            </span>
+          </div>
+
+          {/* Right: action text */}
+          <span>
+            {submitting
+              ? 'Submitting…'
+              : picks.length === 3
+                ? 'Submit my picks →'
+                : `Pick ${3 - picks.length} more`}
+          </span>
+        </button>
+      </div>
     </ViewerShell>
   );
 }
@@ -2066,7 +2440,8 @@ function OwnerApp() {
   const [tab,setTab]=useState('library');
   const [games,setGames]=useState([]);
   const [session,setSession]=useState(null);
-  const [voteSession,setVoteSession]=useState(null); // { sessionId, ownerKey, viewerUrl }
+  const [voteSessions, setVoteSessions] = useState([]); // [{ sessionId, ownerKey, viewerUrl, label, createdAt }]
+  const [activeVoteSessionId, setActiveVoteSessionId] = useState(null); // currently being viewed in detail, null = list
   const [history,setHistory]=useState([]);
   const [ready,setReady]=useState(false);
   const [modal,setModal]=useState(null);
@@ -2093,7 +2468,28 @@ function OwnerApp() {
       try{ const r=await window.storage.get('gn4-sess'); if(r) setSession(JSON.parse(r.value)); }catch{}
       try{ const r=await window.storage.get('gn4-hist'); if(r) setHistory(JSON.parse(r.value)); }catch{}
       try{ const r=await window.storage.get('gn4-profile'); if(r) setProfile(JSON.parse(r.value)); }catch{}
-      try{ const r=await window.storage.get('gn4-vote-session'); if(r) setVoteSession(JSON.parse(r.value)); }catch{}
+      // voteSessions: load new plural key, falling back to migrating the old singular key.
+      try {
+        const r = await window.storage.get('gn4-vote-sessions');
+        if (r) {
+          const arr = JSON.parse(r.value);
+          if (Array.isArray(arr)) setVoteSessions(arr);
+        } else {
+          // Migrate from old single-session storage
+          const old = await window.storage.get('gn4-vote-session');
+          if (old) {
+            try {
+              const oldSession = JSON.parse(old.value);
+              if (oldSession && oldSession.sessionId) {
+                const migrated = [{ ...oldSession, createdAt: oldSession.createdAt || Date.now() }];
+                setVoteSessions(migrated);
+                await window.storage.set('gn4-vote-sessions', JSON.stringify(migrated));
+                await window.storage.delete('gn4-vote-session');
+              }
+            } catch {}
+          }
+        }
+      } catch {}
       try{ const r=await window.storage.get('gn4-backup-code'); if(r) setBackupCode(JSON.parse(r.value)); }catch{}
       try{ const r=await window.storage.get('gn4-backup-synced'); if(r) setBackupSyncedAt(JSON.parse(r.value)); }catch{}
       setReady(true);
@@ -2104,7 +2500,26 @@ function OwnerApp() {
   async function saveSession(s){ setSession(s); try{ if(s) await window.storage.set('gn4-sess',JSON.stringify(s)); else await window.storage.delete('gn4-sess'); }catch{} }
   async function saveHistory(h){ setHistory(h); try{ await window.storage.set('gn4-hist',JSON.stringify(h)); }catch{} }
   async function saveProfile(p){ setProfile(p); try{ if(p) await window.storage.set('gn4-profile',JSON.stringify(p)); else await window.storage.delete('gn4-profile'); }catch{} }
-  async function saveVoteSession(v){ setVoteSession(v); try{ if(v) await window.storage.set('gn4-vote-session',JSON.stringify(v)); else await window.storage.delete('gn4-vote-session'); }catch{} }
+  async function saveVoteSessions(arr) {
+    setVoteSessions(arr);
+    try {
+      if (arr && arr.length) await window.storage.set('gn4-vote-sessions', JSON.stringify(arr));
+      else await window.storage.delete('gn4-vote-sessions');
+    } catch {}
+  }
+  // Add a newly-created session to the list (most recent first)
+  async function addVoteSession(s) {
+    const stamped = { ...s, createdAt: s.createdAt || Date.now() };
+    const next = [stamped, ...voteSessions.filter(x => x.sessionId !== stamped.sessionId)];
+    await saveVoteSessions(next);
+    setActiveVoteSessionId(stamped.sessionId);
+  }
+  // Remove a session from the list (after end-session or 404 on backend)
+  async function removeVoteSession(sessionId) {
+    const next = voteSessions.filter(x => x.sessionId !== sessionId);
+    await saveVoteSessions(next);
+    if (activeVoteSessionId === sessionId) setActiveVoteSessionId(null);
+  }
   async function saveBackupCode(c){ setBackupCode(c); try{ if(c) await window.storage.set('gn4-backup-code',JSON.stringify(c)); else await window.storage.delete('gn4-backup-code'); }catch{} }
   async function saveBackupSyncedAt(t){ setBackupSyncedAt(t); try{ if(t) await window.storage.set('gn4-backup-synced',JSON.stringify(t)); else await window.storage.delete('gn4-backup-synced'); }catch{} }
 
@@ -2160,15 +2575,20 @@ function OwnerApp() {
     return record;
   }
 
-  // Bridge: when remote voting is complete, the panel dispatches an event with a pre-built local session
+  // Bridge: when remote voting is complete, the panel dispatches an event with a pre-built local session.
+  // We start the local night and remove THAT specific remote session from the list,
+  // leaving any other parallel sessions alone.
   useEffect(() => {
     function handler(e) {
-      saveSession(e.detail);
-      saveVoteSession(null); // close out the remote session — the local flow takes over
+      const { localSession, sourceSessionId } = e.detail || {};
+      if (localSession) saveSession(localSession);
+      if (sourceSessionId) removeVoteSession(sourceSessionId);
     }
     window.addEventListener('start-local-from-remote', handler);
     return () => window.removeEventListener('start-local-from-remote', handler);
-  }, []);
+    // removeVoteSession depends on voteSessions, so re-bind whenever it changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voteSessions]);
 
 
   async function handleSync(username) {
@@ -2213,7 +2633,7 @@ function OwnerApp() {
 
   if(!ready) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:T.bg,fontFamily:T.serif,fontSize:18,color:T.sub}}>Loading…</div>;
 
-  const nightBadge = (!!session || !!voteSession) && tab!=='night';
+  const nightBadge = (!!session || voteSessions.length > 0) && tab!=='night';
 
   return (
     <>
@@ -2260,7 +2680,15 @@ function OwnerApp() {
 
         <div style={{padding:'22px 22px 28px'}}>
           {tab==='library'&&<LibraryTab  games={games} onSelect={setModal} onOpenProfile={()=>setShowProfile(true)} profile={profile}/>}
-          {tab==='night'  &&<NightTab    games={games} session={session} onUpdate={saveSession} onFinish={finishNight} onGoToLibrary={()=>setTab('library')} voteSession={voteSession} onVoteSessionChange={saveVoteSession}/>}
+          {tab==='night'  &&<NightTab
+            games={games} session={session} onUpdate={saveSession} onFinish={finishNight}
+            onGoToLibrary={()=>setTab('library')}
+            voteSessions={voteSessions}
+            activeVoteSessionId={activeVoteSessionId}
+            onSelectVoteSession={setActiveVoteSessionId}
+            onAddVoteSession={addVoteSession}
+            onRemoveVoteSession={removeVoteSession}
+          />}
           {tab==='scores' &&<ScoresTab   session={session} history={history} onDeleteEntry={deleteHistoryEntry} games={games}/>}
         </div>
 
