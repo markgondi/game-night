@@ -1196,9 +1196,17 @@ function NSessionActive({ session, games, onClear, onBack }) {
 }
 
 // Reusable back arrow at the top of session screens
-function SessionBackBtn({ onBack }) {
+// Reusable top-of-screen back button. Used across the Tonight tab flow.
+//   - `label` controls the link text (e.g. "Back", "All sessions", "Cancel night")
+//   - If `confirm` is provided, a window.confirm is shown before calling onBack —
+//     use this for screens where going back discards real progress (vetoes, etc).
+function BackBtn({ onBack, label = 'Back', confirm = null }) {
+  function handle() {
+    if (confirm && !window.confirm(confirm)) return;
+    onBack();
+  }
   return (
-    <button className="press" onClick={onBack} style={{
+    <button className="press" onClick={handle} style={{
       display:'flex',alignItems:'center',gap:6,
       background:'none',border:'none',padding:'4px 0 14px',
       color:T.sub,fontFamily:T.sans,fontSize:13,fontWeight:500,
@@ -1207,9 +1215,14 @@ function SessionBackBtn({ onBack }) {
       <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <polyline points="9,2 3,7 9,12"/>
       </svg>
-      All sessions
+      {label}
     </button>
   );
+}
+
+// Kept for backwards compatibility — NSessionActive uses the older name
+function SessionBackBtn({ onBack }) {
+  return <BackBtn onBack={onBack} label="All sessions"/>;
 }
 function NightTab({
   games, session, onUpdate, onFinish, onGoToLibrary,
@@ -1234,9 +1247,11 @@ function NightTab({
     );
   }
 
-  // Active local session takes the screen (in-person game night in progress)
+  // Active local session takes the screen (in-person game night in progress).
+  // onCancelSession lets nested screens nuke the whole session and return home.
+  const cancelLocalSession = () => onUpdate(null);
   if (session) {
-    if(session.phase==='nominate') return <NNominate games={games} session={session} onUpdate={onUpdate}/>;
+    if(session.phase==='nominate') return <NNominate games={games} session={session} onUpdate={onUpdate} onCancelSession={cancelLocalSession}/>;
     if(session.phase==='pool')     return <NPool     games={games} session={session} onUpdate={onUpdate}/>;
     if(session.phase==='veto')     return <NVeto     games={games} session={session} onUpdate={onUpdate}/>;
     if(session.phase==='pick')     return <NPick     games={games} session={session} onUpdate={onUpdate}/>;
@@ -1255,8 +1270,8 @@ function NightTab({
     );
   }
 
-  // Setup flows
-  if (view === 'local') return <NSetup onStart={onUpdate} history={history}/>;
+  // Setup flows. NSetup gets onBack to return to the NightTab home view.
+  if (view === 'local') return <NSetup onStart={onUpdate} history={history} onBack={() => setView('home')}/>;
   if (view === 'remote-setup') return (
     <NSessionSetup
       games={games}
@@ -1397,7 +1412,7 @@ function NSessionListRow({ session, onClick }) {
   );
 }
 
-function NSetup({ onStart, history }) {
+function NSetup({ onStart, history, onBack }) {
   const [rows, setRows]   = useState(['','','']);
   const [count, setCount] = useState(3);
   // The in-person flow used to track a "nominatorCount" (first N players nominate).
@@ -1516,6 +1531,7 @@ function NSetup({ onStart, history }) {
 
   return (
     <div className="page-in">
+      {onBack && <BackBtn onBack={onBack}/>}
       <h1 style={{fontFamily:T.serif,fontSize:32,fontWeight:700,color:T.ink,marginBottom:6}}>Tonight</h1>
       <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:28,lineHeight:1.5}}>
         {total === 0
@@ -1627,7 +1643,7 @@ function NSetup({ onStart, history }) {
   );
 }
 
-function NNominate({ games, session, onUpdate }) {
+function NNominate({ games, session, onUpdate, onCancelSession }) {
   const { players, currentNominator, nominations } = session;
   const picksPerPlayer = session.picksPerPlayer ?? 3;
   // Old sessions might not have nominatorIndices — derive: everyone except picker.
@@ -1639,6 +1655,10 @@ function NNominate({ games, session, onUpdate }) {
   const currentPlayerName = players[currentPlayerIndex];
 
   const [picks, setPicks] = useState(nominations[currentPlayerIndex] || []);
+  // When currentNominator changes (forward or back), reload picks from saved nominations
+  useEffect(() => {
+    setPicks(nominations[currentPlayerIndex] || []);
+  }, [currentNominator]);
   const [q, setQ] = useState('');
   const [foc, setFoc] = useState(false);
   const pc = players.length;
@@ -1668,6 +1688,22 @@ function NNominate({ games, session, onUpdate }) {
     }
   }
 
+  // Back behaviour: step back one nominator if possible, else exit session.
+  // Going back one nominator preserves their previous picks so they can edit.
+  function goBack() {
+    if (currentNominator > 0) {
+      onUpdate({ ...session, currentNominator: currentNominator - 1 });
+      // The picks state will be re-initialised when the component re-renders
+      // with the new currentPlayerIndex
+    } else if (onCancelSession) {
+      onCancelSession();
+    }
+  }
+  const backLabel = currentNominator > 0 ? 'Previous player' : 'Cancel night';
+  const backConfirm = currentNominator > 0
+    ? null  // soft back — previous player's picks are preserved
+    : 'Cancel this night and lose all nominations so far?';
+
   // Picker doesn't appear in this loop at all — they're filtered out of nominatorIndices.
   // But just in case (e.g. stale session), show a clear message.
   if (!currentPlayerName) {
@@ -1682,6 +1718,7 @@ function NNominate({ games, session, onUpdate }) {
 
   return (
     <div className="page-in">
+      <BackBtn onBack={goBack} label={backLabel} confirm={backConfirm}/>
       <div style={{marginBottom:22}}>
         <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.sub,marginBottom:5}}>
           Nomination {currentNominator+1} of {nominatorIndices.length}
@@ -1753,10 +1790,24 @@ function NNominate({ games, session, onUpdate }) {
 
 function NPool({ games, session, onUpdate }) {
   const poolGames=session.pool.map(id=>games.find(g=>g.id===id)).filter(Boolean);
+  const pickerIndex = session.pickerIndex ?? session.players.length - 1;
+  const nominatorIndices = session.nominatorIndices
+    ?? session.players.map((_,i)=>i).filter(i => i !== pickerIndex);
+
+  // Back behaviour: return to the last nominator so they can edit their picks
+  function goBack() {
+    onUpdate({
+      ...session,
+      phase: 'nominate',
+      currentNominator: Math.max(0, nominatorIndices.length - 1),
+    });
+  }
+
   return (
     <div className="page-in">
+      <BackBtn onBack={goBack} label="Back to nominations"/>
       <h2 style={{fontFamily:T.serif,fontSize:28,fontWeight:700,color:T.ink,marginBottom:5}}>The Pool</h2>
-      <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:22,lineHeight:1.5}}>{poolGames.length} games nominated. Each player gets one veto.</p>
+      <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:22,lineHeight:1.5}}>{poolGames.length} games nominated. Each eligible player gets one veto.</p>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:24}}>
         {poolGames.map(g=>(
           <div key={g.id} style={{background:T.card,borderRadius:12,overflow:'hidden',boxShadow:T.shadow}}>
@@ -1779,7 +1830,9 @@ function NPool({ games, session, onUpdate }) {
         }
       }} full>Begin veto round</Btn>
       <div style={{textAlign:'center',marginTop:16}}>
-        <button className="press" onClick={()=>onUpdate(null)} style={{background:'none',border:'none',fontFamily:T.sans,fontSize:13,color:T.sub,cursor:'pointer'}}>Cancel night</button>
+        <button className="press" onClick={()=>{
+          if (window.confirm('Cancel this night and lose all progress?')) onUpdate(null);
+        }} style={{background:'none',border:'none',fontFamily:T.sans,fontSize:13,color:T.sub,cursor:'pointer'}}>Cancel night</button>
       </div>
     </div>
   );
@@ -1844,6 +1897,25 @@ function NVeto({ games, session, onUpdate }) {
     if (confirmAction === 'skip') commit(null);
   }
 
+  // Back behaviour: step back one vetoer (undoing their veto), or return to pool
+  // on the first vetoer. Both branches need a confirm because vetoes are real progress.
+  function goBack() {
+    if (currentVetoIndex > 0) {
+      // Undo the previous vetoer's veto and step back to them
+      const prevIndex = vetoerIndices[currentVetoIndex - 1];
+      const newVetoes = { ...vetoes };
+      delete newVetoes[prevIndex];
+      onUpdate({ ...session, currentVetoIndex: currentVetoIndex - 1, vetoes: newVetoes });
+    } else {
+      // First vetoer — go back to the pool screen
+      onUpdate({ ...session, phase: 'pool', vetoes: {}, currentVetoIndex: 0 });
+    }
+  }
+  const backLabel = currentVetoIndex > 0 ? 'Previous vetoer' : 'Back to pool';
+  const backConfirm = currentVetoIndex > 0
+    ? 'Undo previous veto?'
+    : null;  // no real progress lost yet when returning to pool from first vetoer
+
   // If somehow we have no current player (e.g. stale session, picker got into the loop)
   if (!currentPlayerName) {
     return (
@@ -1861,6 +1933,7 @@ function NVeto({ games, session, onUpdate }) {
 
   return (
     <div className="page-in">
+      <BackBtn onBack={goBack} label={backLabel} confirm={backConfirm}/>
       <div style={{marginBottom:18}}>
         <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.danger,marginBottom:5}}>Veto phase · pass the phone</div>
         <h2 style={{fontFamily:T.serif,fontSize:28,fontWeight:700,color:T.ink,marginBottom:14}}>
@@ -1954,8 +2027,31 @@ function NPick({ games, session, onUpdate }) {
   const [sel,setSel]=useState(null);
   const remainGames=remaining.map(id=>games.find(g=>g.id===id)).filter(Boolean);
 
+  // Back behaviour: depends on what came before.
+  // If there were vetoers, return to the last veto step.
+  // If no vetoes happened (vetoerIndices empty or this session jumped from pool→pick),
+  // go back to the pool screen.
+  const vetoerIndices = session.vetoerIndices ?? [];
+  function goBack() {
+    if (vetoerIndices.length > 0) {
+      // Return to the last vetoer and undo their veto so they can redo
+      const lastIdx = vetoerIndices.length - 1;
+      const lastPlayerIdx = vetoerIndices[lastIdx];
+      const newVetoes = { ...(session.vetoes || {}) };
+      delete newVetoes[lastPlayerIdx];
+      onUpdate({ ...session, phase:'veto', currentVetoIndex:lastIdx, vetoes:newVetoes });
+    } else {
+      onUpdate({ ...session, phase:'pool' });
+    }
+  }
+
   return (
     <div className="page-in">
+      <BackBtn
+        onBack={goBack}
+        label={vetoerIndices.length > 0 ? 'Back to veto' : 'Back to pool'}
+        confirm="Going back will let you redo the last step. Continue?"
+      />
       <div style={{marginBottom:22}}>
         <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.amber,marginBottom:5}}>Final pick</div>
         <h2 style={{fontFamily:T.serif,fontSize:28,fontWeight:700,color:T.ink}}>{picker}</h2>
@@ -2006,8 +2102,20 @@ function NPlaying({ games, session, onUpdate, onFinish }) {
 
   if(!game) return null;
 
+  // Back behaviour: return to the final pick step. Discards any unsaved scores.
+  function goBack() {
+    onUpdate({ ...session, phase:'pick', chosenGame:null, scores:{} });
+  }
+
   return (
     <div className="page-in">
+      <BackBtn
+        onBack={goBack}
+        label="Back to pick"
+        confirm={Object.values(scores).some(a => a && a.length > 0)
+          ? 'Discard the current scores and pick a different game?'
+          : 'Pick a different game?'}
+      />
       <div style={{borderRadius:14,overflow:'hidden',marginBottom:18,boxShadow:T.shadowMd}}>
         <GameImg game={game} height={165}/>
         <div style={{background:T.card,padding:'14px 16px'}}>
