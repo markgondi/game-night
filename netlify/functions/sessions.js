@@ -69,7 +69,7 @@ function jsonResponse(body, status = 200, extraHeaders = {}) {
 }
 
 // ── Phase + expiry helpers ───────────────────────────────────────────────────
-const VALID_PHASES = new Set(['nominate', 'veto', 'review', 'complete']);
+const VALID_PHASES = new Set(['nominate', 'veto', 'review', 'pick', 'complete']);
 
 function isExpired(meta) {
   if (!meta) return true;
@@ -255,10 +255,15 @@ export default async (req) => {
       const nominatedPlayerIds = noms.map(n => n.playerId);
       const vetoedPlayerIds = vetoes.map(v => v.playerId);
 
-      // Expose the pool only once nominations are over. Don't leak during nominate.
+      // Expose the pool from veto phase onwards. Compute the final pool
+      // (post-veto) when relevant so the picker can see only their options.
       let pool = null;
-      if (sessionMeta.phase === 'veto' || sessionMeta.phase === 'review' || sessionMeta.phase === 'complete') {
+      let finalPool = null;
+      if (sessionMeta.phase === 'veto' || sessionMeta.phase === 'review' ||
+          sessionMeta.phase === 'pick' || sessionMeta.phase === 'complete') {
         pool = assemblePool(noms);
+        const removedGameIds = new Set(vetoes.filter(v => !v.skipped && v.gameId).map(v => v.gameId));
+        finalPool = pool.filter(gid => !removedGameIds.has(gid));
       }
 
       const { ownerKeyHash, ...publicMeta } = sessionMeta;
@@ -267,6 +272,7 @@ export default async (req) => {
         nominatedPlayerIds,
         vetoedPlayerIds,
         pool,
+        finalPool,
         readOnly: !!sessionMeta.completedAt,
       });
     }
@@ -330,7 +336,10 @@ export default async (req) => {
         (cur === 'veto'     && newPhase === 'review') ||
         (cur === 'veto'     && newPhase === 'nominate') ||  // host can re-open if needed
         (cur === 'review'   && newPhase === 'veto') ||
-        (cur === 'review'   && newPhase === 'complete')
+        (cur === 'review'   && newPhase === 'pick') ||      // host hands off to remote picker
+        (cur === 'review'   && newPhase === 'complete') ||  // host takes the pick in-person
+        (cur === 'pick'     && newPhase === 'review') ||    // picker hasn't shown up, host pulls back
+        (cur === 'pick'     && newPhase === 'complete')     // picker submitted, host closes session
       );
       if (!ok) return jsonResponse({ error: `Cannot transition ${cur} → ${newPhase}` }, 400);
 
@@ -338,6 +347,40 @@ export default async (req) => {
       if (newPhase === 'complete') updated.completedAt = Date.now();
       await meta.setJSON(route.sessionId, updated);
       return jsonResponse({ ok: true, phase: newPhase });
+    }
+
+    // ── POST /api/sessions/:id/final-pick ── public, but only picker can submit ─
+    // The remote final picker chooses their game from the post-veto pool.
+    // Updates meta with finalPickedGameId; host polls and reacts.
+    if (route.action === 'final-pick' && req.method === 'POST') {
+      if (sessionMeta.phase !== 'pick') {
+        return jsonResponse({ error: 'Final pick phase is not open' }, 423);
+      }
+      const body = await req.json().catch(() => null);
+      if (!body?.playerId) return jsonResponse({ error: 'playerId required' }, 400);
+      if (body.playerId !== sessionMeta.format.pickerId) {
+        return jsonResponse({ error: 'Only the final picker can submit the pick' }, 403);
+      }
+      if (!body.gameId || typeof body.gameId !== 'string') {
+        return jsonResponse({ error: 'gameId required' }, 400);
+      }
+      // Game must be in the post-veto final pool
+      const noms = await loadAllNominations(votes, route.sessionId);
+      const vetoes = await loadAllVetoes(votes, route.sessionId);
+      const pool = assemblePool(noms);
+      const removedGameIds = new Set(vetoes.filter(v => !v.skipped && v.gameId).map(v => v.gameId));
+      const finalPool = pool.filter(gid => !removedGameIds.has(gid));
+      if (!finalPool.includes(body.gameId)) {
+        return jsonResponse({ error: 'gameId must be from the final pool' }, 400);
+      }
+
+      const updated = {
+        ...sessionMeta,
+        finalPickedGameId: body.gameId,
+        finalPickedAt: Date.now(),
+      };
+      await meta.setJSON(route.sessionId, updated);
+      return jsonResponse({ ok: true, gameId: body.gameId });
     }
 
     // ── POST /api/sessions/:id/host-vote ── owner override (nominate on behalf)
