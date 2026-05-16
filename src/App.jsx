@@ -888,7 +888,7 @@ function NSessionActive({ session, games, onClear, onBack }) {
       } catch (e) {
         if (!stopped) setError(e.message);
       }
-      if (!stopped) timer = setTimeout(poll, 4000);
+      if (!stopped) timer = setTimeout(poll, 2000);
     }
     poll();
     return () => { stopped = true; if (timer) clearTimeout(timer); };
@@ -961,7 +961,8 @@ function NSessionActive({ session, games, onClear, onBack }) {
   const phaseLabel = {
     nominate: { tag:'Nomination phase', desc:`Each player nominates ${picksPerPlayer} games from their link.` },
     veto:     { tag:'Veto phase',       desc:'Each eligible player vetoes one game (or skips) from their link.' },
-    review:   { tag:'Review',           desc:'Confirm the final pool, then move to the in-person final pick.' },
+    review:   { tag:'Review',           desc:'Confirm the final pool before sending to the picker.' },
+    pick:     { tag:'Final pick',       desc:'Picker is choosing the game from their own link.' },
     complete: { tag:'Complete',         desc:'Session is over.' },
   }[phase] || { tag: phase, desc:'' };
 
@@ -1136,13 +1137,25 @@ function NSessionActive({ session, games, onClear, onBack }) {
 
           <div style={{background:T.card,borderRadius:14,padding:'14px 16px',marginBottom:14,boxShadow:T.shadow,fontFamily:T.sans,fontSize:13,color:T.ink,lineHeight:1.6}}>
             Picker tonight: <strong style={{color:T.amber}}>{players.find(p => p.id === pickerId)?.name}</strong>
-            <div style={{fontSize:11,color:T.sub,marginTop:4,fontStyle:'italic'}}>
-              They'll choose the final game on this device.
-            </div>
           </div>
 
-          <Btn variant='amber' full disabled={poolGames.length === 0} onClick={()=>{
-            // Build a local session that lands directly in the 'pick' phase
+          {/* Two paths from review:
+              1. Send to the picker on their own link (remote)
+              2. Run the pick in person on this device                              */}
+          <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.sub,marginBottom:10}}>
+            How will {players.find(p => p.id === pickerId)?.name} pick?
+          </div>
+
+          <Btn variant='amber' full disabled={poolGames.length === 0 || transitioning} onClick={()=>setPhase('pick')}>
+            {transitioning ? 'Opening…' : `Send pick link to ${players.find(p => p.id === pickerId)?.name} →`}
+          </Btn>
+
+          <div style={{textAlign:'center',margin:'10px 0',fontFamily:T.sans,fontSize:11,color:T.sub,letterSpacing:'0.08em',textTransform:'uppercase',opacity:0.7}}>
+            or
+          </div>
+
+          <Btn variant='outline' full disabled={poolGames.length === 0} onClick={()=>{
+            // In-person path: build a local session and hand off to the host's device
             const pickerIndex = players.findIndex(p => p.id === pickerId);
             const localSession = {
               phase: 'pick',
@@ -1163,18 +1176,16 @@ function NSessionActive({ session, games, onClear, onBack }) {
               remaining: finalPool,
               chosenGame: null,
               scores: {},
-              // Record where this session came from — flows through to the history entry
-              // so we can trace which voting session led to which played game.
               sourceSessionId: session.sessionId,
             };
             window.dispatchEvent(new CustomEvent('start-local-from-remote', {
               detail: { localSession, sourceSessionId: session.sessionId }
             }));
           }}>
-            Confirm and start final pick →
+            Pick in person on this device →
           </Btn>
 
-          <div style={{display:'flex',gap:10,marginTop:14}}>
+          <div style={{display:'flex',gap:10,marginTop:18}}>
             {vetoMode === 'remote' && (
               <Btn variant='ghost' full disabled={transitioning} onClick={()=>setPhase('veto')}>
                 ← Back to veto
@@ -1184,6 +1195,92 @@ function NSessionActive({ session, games, onClear, onBack }) {
               ← Back to nominate
             </Btn>
           </div>
+        </>
+      )}
+
+      {/* ── PICK PHASE — picker is choosing from their own device ─────── */}
+      {phase === 'pick' && (
+        <>
+          <div style={{background:T.card,borderRadius:14,padding:'14px 16px',marginBottom:14,boxShadow:T.shadow}}>
+            <Lbl>Share this link with {players.find(p => p.id === pickerId)?.name}</Lbl>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <input readOnly value={session.viewerUrl}
+                onClick={e => e.target.select()}
+                style={{...IS,fontSize:12,fontFamily:'monospace',padding:'10px 12px',color:T.sub,border:`1.5px solid ${T.border}`}}
+              />
+              <Btn onClick={copyLink} size='sm' variant='primary'>
+                {copyState === 'copied' ? 'Copied' : 'Copy'}
+              </Btn>
+            </div>
+            <p style={{fontFamily:T.sans,fontSize:12,color:T.sub,marginTop:10,lineHeight:1.5}}>
+              {players.find(p => p.id === pickerId)?.name} opens the link, taps their name, and chooses the final game.
+            </p>
+          </div>
+
+          {results.finalPickedGameId ? (() => {
+            const picked = games.find(g => g.id === results.finalPickedGameId);
+            return (
+              <div style={{background:T.amberBg,border:`1.5px solid ${T.amberBd}`,borderRadius:12,padding:16,marginBottom:14}}>
+                <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.amber,marginBottom:8}}>
+                  ✓ {players.find(p => p.id === pickerId)?.name} picked
+                </div>
+                {picked && (
+                  <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:14}}>
+                    <div style={{width:54,height:54,borderRadius:9,overflow:'hidden',flexShrink:0}}>
+                      <GameImg game={picked} height={54}/>
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontFamily:T.serif,fontSize:18,fontWeight:700,color:T.ink,marginBottom:3}}>{picked.name}</div>
+                      <div style={{fontFamily:T.sans,fontSize:11,color:T.sub}}>{picked.minPlayers}–{picked.maxPlayers}p · {picked.category}</div>
+                    </div>
+                  </div>
+                )}
+                <Btn variant='amber' full onClick={()=>{
+                  // Build local session jumping straight to NPlaying with the chosen game
+                  const pickerIndex = players.findIndex(p => p.id === pickerId);
+                  const localSession = {
+                    phase: 'playing',
+                    players: players.map(p => p.name),
+                    picksPerPlayer,
+                    pickerIndex,
+                    nominatorIndices: players.map((_, i) => i).filter(i => i !== pickerIndex),
+                    currentNominator: 0,
+                    nominations: Object.fromEntries(
+                      nominations.map(n => [players.findIndex(p => p.id === n.playerId), n.picks])
+                    ),
+                    pool,
+                    vetoerIndices: Array.from(vetoerIds).map(vid => players.findIndex(p => p.id === vid)),
+                    currentVetoIndex: 0,
+                    vetoes: Object.fromEntries(
+                      vetoes.map(v => [players.findIndex(p => p.id === v.playerId), v.skipped ? null : v.gameId])
+                    ),
+                    remaining: finalPool,
+                    chosenGame: results.finalPickedGameId,
+                    scores: {},
+                    sourceSessionId: session.sessionId,
+                  };
+                  window.dispatchEvent(new CustomEvent('start-local-from-remote', {
+                    detail: { localSession, sourceSessionId: session.sessionId }
+                  }));
+                }}>
+                  Start playing →
+                </Btn>
+              </div>
+            );
+          })() : (
+            <div style={{background:T.card,borderRadius:12,padding:16,marginBottom:14,boxShadow:T.shadow,textAlign:'center'}}>
+              <div style={{fontFamily:T.serif,fontSize:18,color:T.ink,marginBottom:6}}>
+                Waiting for {players.find(p => p.id === pickerId)?.name}…
+              </div>
+              <p style={{fontFamily:T.sans,fontSize:12,color:T.sub,lineHeight:1.55,marginBottom:0}}>
+                They need to open the link and choose from {poolGames.length} {poolGames.length === 1 ? 'game' : 'games'}.
+              </p>
+            </div>
+          )}
+
+          <Btn variant='ghost' full disabled={transitioning} onClick={()=>setPhase('review')}>
+            ← Back to review
+          </Btn>
         </>
       )}
 
@@ -1376,7 +1473,7 @@ function NSessionListRow({ session, onClick }) {
       }
     }
     tick();
-    timer = setInterval(tick, 8000); // gentler poll on the list view
+    timer = setInterval(tick, 5000); // moderate poll on the list view
     return () => { cancelled = true; clearInterval(timer); };
   }, [session.sessionId]);
 
@@ -2791,6 +2888,16 @@ const SessionApi = {
     if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
     return r.json();
   },
+  // Public: the final picker submits their game choice from their own device
+  async submitFinalPick(sessionId, playerId, gameId) {
+    const r = await fetch(`/api/sessions/${sessionId}/final-pick`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerId, gameId }),
+    });
+    if (!r.ok) throw new Error((await r.json()).error || `HTTP ${r.status}`);
+    return r.json();
+  },
   async complete(sessionId, ownerKey) {
     const r = await fetch(`/api/sessions/${sessionId}/complete`, {
       method: 'POST',
@@ -2877,6 +2984,8 @@ function ViewerApp({ sessionId }) {
   const [picks, setPicks] = useState([]);
   // For veto stage: which game we've selected to remove (null = none yet)
   const [vetoSel, setVetoSel] = useState(null);
+  // For final-pick stage (picker only): which game they've selected to play
+  const [finalPickSel, setFinalPickSel] = useState(null);
   const [submitted, setSubmitted] = useState(false);
   const [vetoSubmitted, setVetoSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -2905,7 +3014,7 @@ function ViewerApp({ sessionId }) {
       } catch (e) {
         if (!cancelled) setError(e.message);
       }
-      if (!cancelled) timer = setTimeout(load, 8000);
+      if (!cancelled) timer = setTimeout(load, 3000);
     }
     load();
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
@@ -2947,6 +3056,21 @@ function ViewerApp({ sessionId }) {
     try {
       await SessionApi.veto(sessionId, chosenPlayerId, gameId);
       setVetoSubmitted(true);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitFinalPick() {
+    if (!finalPickSel || !chosenPlayerId) return;
+    setSubmitting(true);
+    try {
+      await SessionApi.submitFinalPick(sessionId, chosenPlayerId, finalPickSel);
+      // The host will see our pick land on the next poll and move us forward.
+      // We don't set any local "submitted" state — the meta.finalPickedGameId
+      // arriving on the next poll is what flips us into the thank-you screen.
     } catch (e) {
       setError(e.message);
     } finally {
@@ -3021,8 +3145,119 @@ function ViewerApp({ sessionId }) {
   const isVetoer = (meta.format?.vetoerIds || []).includes(me?.id);
   const phase = meta.phase || 'nominate';
 
-  // Final picker — never shows nominate or veto UI
+  // Final picker — branching by phase
   if (isPicker) {
+    // Phase: pick — show the final pool and let them choose
+    if (phase === 'pick') {
+      // Already submitted? Backend has finalPickedGameId set
+      if (meta.finalPickedGameId) {
+        const picked = meta.games.find(g => g.id === meta.finalPickedGameId);
+        return (
+          <ViewerShell title={`Hi, ${me?.name || ''}`}>
+            <div style={{textAlign:'center',padding:'40px 0'}}>
+              <div style={{fontSize:42,marginBottom:12}}>✓</div>
+              <p style={{fontFamily:T.serif,fontSize:22,color:T.ink,marginBottom:8}}>Done!</p>
+              {picked && <p style={{fontFamily:T.serif,fontSize:18,color:T.amber,marginBottom:8}}>{picked.name}</p>}
+              <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,lineHeight:1.6}}>
+                Your pick is in. The host has everything they need.
+              </p>
+            </div>
+          </ViewerShell>
+        );
+      }
+
+      // Active pick UI — show the post-veto final pool
+      const poolIds = meta.finalPool || meta.pool || [];
+      const poolGames = poolIds.map(id => meta.games.find(g => g.id === id)).filter(Boolean);
+      const selectedGame = finalPickSel ? meta.games.find(g => g.id === finalPickSel) : null;
+
+      return (
+        <ViewerShell title={`Hi, ${me?.name || ''}`}>
+          <div style={{marginBottom:14}}>
+            <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.amber,marginBottom:6}}>
+              Final pick — your turn
+            </div>
+            <p style={{fontFamily:T.sans,fontSize:14,color:T.ink,lineHeight:1.55,marginBottom:0}}>
+              Choose the game everyone plays tonight. {poolGames.length} {poolGames.length === 1 ? 'game' : 'games'} left after vetoes.
+            </p>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:18,paddingBottom:80}}>
+            {poolGames.map(g => {
+              const on = finalPickSel === g.id;
+              return (
+                <div key={g.id} className="card-press" onClick={()=>setFinalPickSel(on?null:g.id)} style={{
+                  background:on?T.amberBg:T.card,
+                  border:`1.5px solid ${on?T.amber:T.border}`,
+                  borderRadius:13,overflow:'hidden',cursor:'pointer',
+                  boxShadow:on?'none':T.shadow,transition:'all 0.15s',position:'relative',
+                  transform:on?'scale(1.02)':'none',
+                }}>
+                  <GameImg game={g} height={115}/>
+                  <div style={{padding:'11px 12px 13px'}}>
+                    <div style={{fontFamily:T.serif,fontSize:16,fontWeight:700,color:T.ink,marginBottom:4}}>{g.name}</div>
+                    <div style={{fontFamily:T.sans,fontSize:11,color:T.sub,marginBottom:7}}>{g.minPlayers}–{g.maxPlayers}p · {g.category}</div>
+                    <CxDots value={g.complexity}/>
+                  </div>
+                  {on && <div style={{position:'absolute',top:10,right:10,width:22,height:22,borderRadius:'50%',background:T.amber,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                    <div style={{width:9,height:9,borderRadius:'50%',background:'#FFFFFF'}}/>
+                  </div>}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Sticky submit bar */}
+          <div style={{
+            position:'fixed', bottom:0, left:'50%', transform:'translateX(-50%)',
+            width:'100%', maxWidth:480,
+            padding:'12px 22px max(14px, env(safe-area-inset-bottom))',
+            background:`linear-gradient(to top, ${T.bg} 70%, rgba(21,17,13,0.85) 100%)`,
+            borderTop:`1px solid ${T.border}`,
+            backdropFilter:'blur(8px)', WebkitBackdropFilter:'blur(8px)',
+            zIndex:200,
+          }}>
+            <button
+              onClick={submitFinalPick}
+              disabled={!finalPickSel || submitting}
+              className="press"
+              style={{
+                width:'100%', padding:'14px 18px', borderRadius:12,
+                border:'none', cursor: (finalPickSel && !submitting) ? 'pointer' : 'default',
+                background: finalPickSel ? T.amber : T.card,
+                color: finalPickSel ? '#15110D' : T.sub,
+                fontFamily:T.sans, fontSize:14, fontWeight:600,
+                transition:'all 0.18s', opacity: submitting ? 0.6 : 1,
+              }}>
+              {submitting
+                ? 'Submitting…'
+                : finalPickSel
+                  ? `Play ${selectedGame?.name} →`
+                  : 'Select a game'}
+            </button>
+          </div>
+        </ViewerShell>
+      );
+    }
+
+    // Phase: complete — picker's done, just say thanks
+    if (phase === 'complete') {
+      const picked = meta.finalPickedGameId ? meta.games.find(g => g.id === meta.finalPickedGameId) : null;
+      return (
+        <ViewerShell title={`Hi, ${me?.name || ''}`}>
+          <div style={{textAlign:'center',padding:'40px 0'}}>
+            <div style={{fontSize:42,marginBottom:12}}>✓</div>
+            <p style={{fontFamily:T.serif,fontSize:22,color:T.ink,marginBottom:8}}>Game night locked in</p>
+            {picked && <p style={{fontFamily:T.serif,fontSize:18,color:T.amber,marginBottom:8}}>{picked.name}</p>}
+            <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,lineHeight:1.6}}>
+              Have fun. The host is running the scoring on their device.
+            </p>
+          </div>
+        </ViewerShell>
+      );
+    }
+
+    // Phase: anything else (nominate, veto, review) — picker waits
     return (
       <ViewerShell title={`Hi, ${me?.name || ''}`}>
         <div style={{background:T.amberBg,border:`1.5px solid ${T.amberBd}`,borderRadius:12,padding:18,marginBottom:14}}>
@@ -3030,11 +3265,11 @@ function ViewerApp({ sessionId }) {
             You're the final picker
           </div>
           <p style={{fontFamily:T.sans,fontSize:14,color:T.ink,lineHeight:1.55,marginBottom:0}}>
-            You do not nominate or veto. The host will run the final pick on their device after everyone else has voted.
+            You don't nominate or veto. When the host opens the pick to you, this page will switch to a game-selection screen.
           </p>
         </div>
         <p style={{fontFamily:T.sans,fontSize:13,color:T.sub,lineHeight:1.55}}>
-          Sit tight — when it's time, the host will name you and let you choose from the remaining games.
+          Sit tight — leave this page open. It updates every few seconds.
         </p>
       </ViewerShell>
     );
