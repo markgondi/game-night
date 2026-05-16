@@ -727,21 +727,9 @@ function NSessionSetup({ games, onCreated, onCancel, history }) {
   return (
     <div className="page-in">
       <h1 style={{fontFamily:T.serif,fontSize:30,fontWeight:700,color:T.ink,marginBottom:6}}>Remote voting</h1>
-      <div style={{
-        background:T.card, borderRadius:12, padding:'14px 16px',
-        marginBottom:20, boxShadow:T.shadow,
-      }}>
-        <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.sub,marginBottom:10}}>
-          How it works
-        </div>
-        <ol style={{margin:0,paddingLeft:18,fontFamily:T.sans,fontSize:13,color:T.ink,lineHeight:1.7}}>
-          <li>Set up players and format below — pick who's the final picker.</li>
-          <li>Share the link with everyone. They each tap their name and nominate games from your library.</li>
-          <li>When everyone's nominated, open the veto phase (if remote) or hand the phone around (if in-person).</li>
-          <li>Review the final pool, then send the pick to the picker — they choose the game.</li>
-          <li>Start playing and score on your device.</li>
-        </ol>
-      </div>
+      <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:24,lineHeight:1.55}}>
+        Send your friends a link. They nominate games, vetoes happen, the picker chooses.
+      </p>
 
       {/* Players */}
       <div style={{background:T.card,borderRadius:14,padding:20,marginBottom:14,boxShadow:T.shadow}}>
