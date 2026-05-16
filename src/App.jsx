@@ -727,9 +727,21 @@ function NSessionSetup({ games, onCreated, onCancel, history }) {
   return (
     <div className="page-in">
       <h1 style={{fontFamily:T.serif,fontSize:30,fontWeight:700,color:T.ink,marginBottom:6}}>Remote voting</h1>
-      <p style={{fontFamily:T.sans,fontSize:14,color:T.sub,marginBottom:24,lineHeight:1.55}}>
-        Each friend gets a link to nominate (and optionally veto) games from your collection before game night.
-      </p>
+      <div style={{
+        background:T.card, borderRadius:12, padding:'14px 16px',
+        marginBottom:20, boxShadow:T.shadow,
+      }}>
+        <div style={{fontFamily:T.sans,fontSize:11,fontWeight:600,letterSpacing:'0.07em',textTransform:'uppercase',color:T.sub,marginBottom:10}}>
+          How it works
+        </div>
+        <ol style={{margin:0,paddingLeft:18,fontFamily:T.sans,fontSize:13,color:T.ink,lineHeight:1.7}}>
+          <li>Set up players and format below — pick who's the final picker.</li>
+          <li>Share the link with everyone. They each tap their name and nominate games from your library.</li>
+          <li>When everyone's nominated, open the veto phase (if remote) or hand the phone around (if in-person).</li>
+          <li>Review the final pool, then send the pick to the picker — they choose the game.</li>
+          <li>Start playing and score on your device.</li>
+        </ol>
+      </div>
 
       {/* Players */}
       <div style={{background:T.card,borderRadius:14,padding:20,marginBottom:14,boxShadow:T.shadow}}>
@@ -1155,11 +1167,14 @@ function NSessionActive({ session, games, onClear, onBack }) {
           </div>
 
           <Btn variant='outline' full disabled={poolGames.length === 0} onClick={()=>{
-            // In-person path: build a local session and hand off to the host's device
+            // In-person path: build a local session and hand off to the host's device.
+            // Carry playerIds alongside players so NPlaying can record the picker's id
+            // in the history entry.
             const pickerIndex = players.findIndex(p => p.id === pickerId);
             const localSession = {
               phase: 'pick',
               players: players.map(p => p.name),
+              playerIds: players.map(p => p.id),
               picksPerPlayer,
               pickerIndex,
               nominatorIndices: players.map((_, i) => i).filter(i => i !== pickerIndex),
@@ -1236,11 +1251,13 @@ function NSessionActive({ session, games, onClear, onBack }) {
                   </div>
                 )}
                 <Btn variant='amber' full onClick={()=>{
-                  // Build local session jumping straight to NPlaying with the chosen game
+                  // Build local session jumping straight to NPlaying with the chosen game.
+                  // playerIds is carried so NPlaying can record the picker's id in history.
                   const pickerIndex = players.findIndex(p => p.id === pickerId);
                   const localSession = {
                     phase: 'playing',
                     players: players.map(p => p.name),
+                    playerIds: players.map(p => p.id),
                     picksPerPlayer,
                     pickerIndex,
                     nominatorIndices: players.map((_, i) => i).filter(i => i !== pickerIndex),
@@ -2264,27 +2281,31 @@ function NPlaying({ games, session, onUpdate, onFinish }) {
         // Save to history only if any scores were recorded
         const anyScores = Object.values(scores).some(arr => arr && arr.length > 0);
         if(anyScores) {
-          // Resolve picker name from session if available. Falls back to null
-          // for very old sessions that pre-date the picker concept.
+          // Picker name comes from the players array (always names in local sessions).
+          // Picker ID is only present for sessions that came from a remote source —
+          // see NSessionActive where playerIds is layered onto the localSession.
           const pickerIndex = session.pickerIndex;
           const finalPickerName = (pickerIndex !== undefined && players[pickerIndex])
             ? players[pickerIndex]
+            : null;
+          const finalPickerId = (pickerIndex !== undefined && session.playerIds?.[pickerIndex])
+            ? session.playerIds[pickerIndex]
             : null;
 
           onFinish({
             id: uid(),
             finishedAt: Date.now(),
-            completedAt: Date.now(),         // duplicate of finishedAt — explicit name for the cloud schema
+            completedAt: Date.now(),
             gameId: game.id,
             gameName: game.name,
-            pickedGameId: game.id,           // explicit names per the cloud schema
+            pickedGameId: game.id,
             pickedGameName: game.name,
             players: [...players],
             scores: {...scores},
             totals: {...totals},
             finalPickerName,
-            finalPickerId: session.players?.[pickerIndex] ?? null,  // local sessions store names, not IDs
-            sessionId: session.sourceSessionId || null,             // remote-session ID if applicable
+            finalPickerId,                              // populated when picker came from a remote session
+            sessionId: session.sourceSessionId || null, // remote-session ID if applicable
           });
         } else {
           onUpdate(null);
