@@ -3753,8 +3753,9 @@ function StatsTab({ history, games }) {
     if (days >= 21) overduePickerHint = { name, days };
   }
 
-  // Forgotten games — owned but not in filtered history
-  const playedGameIds = new Set([...playCount].map(([gid]) => gid));
+  // Forgotten games — owned but not in filtered history.
+  // (playedGameIds is unused now but kept for future use; the filter below
+  // uses lastPlayedByGameId which is the real signal.)
   // Find last-played date for each game in library
   const lastPlayedByGameId = {};
   for (const e of (history || [])) {  // use full history, not filtered, for accurate last-played
